@@ -1,0 +1,21 @@
+{
+  "name": "sms-core",
+  "build": {
+    "dockerfile": "Dockerfile"
+  },
+
+  "features": {},
+
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "bmewburn.vscode-intelephense-client",
+        "xdebug.php-debug"
+      ]
+    }
+  },
+
+  "postCreateCommand": "php -v && php -m",
+
+  "remoteUser": "vscode"
+}
