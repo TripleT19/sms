@@ -97,4 +97,16 @@ class User extends Authenticatable
         return $this->belongsToMany(Student::class, 'guardian_student')
             ->withPivot('relationship');
     }
+
+    public function conversations()
+    {
+        return $this->belongsToMany(Conversation::class, 'conversation_participants')
+            ->withPivot('role', 'last_read_at')
+            ->withTimestamps();
+    }
+
+    public function sentMessages()
+    {
+        return $this->hasMany(Message::class, 'sender_id');
+    }
 }

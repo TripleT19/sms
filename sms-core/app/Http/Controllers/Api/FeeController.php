@@ -107,6 +107,19 @@ class FeeController extends Controller
             }
             $feeType->has_variations = count($validated['amounts']) > 1 || !is_null($validated['amounts'][0]['class_id']);
             $feeType->save();
+
+            $feeType->load('amounts');
+        }
+
+        // Update all existing StudentFee records for this fee type using frozen class/stream
+        $studentFees = StudentFee::where('fee_type_id', $feeType->id)->get();
+        foreach ($studentFees as $sf) {
+            $newAmount = $this->getAmountForClass($feeType, $sf->class_id, $sf->stream_id);
+            if ($newAmount != $sf->total_amount) {
+                $sf->total_amount = $newAmount;
+                $sf->status = $sf->paid_amount >= $newAmount ? 'paid' : ($sf->paid_amount > 0 ? 'partial' : 'pending');
+                $sf->save();
+            }
         }
 
         $this->log('fee_type_updated', "Fee type '{$feeType->name}' updated by {$request->user()->email}");
@@ -161,10 +174,10 @@ class FeeController extends Controller
         ]);
 
         if ($request->class_id) {
-            $query->whereHas('student', fn($q) => $q->where('class_id', $request->class_id));
+            $query->where('class_id', $request->class_id);   // frozen class
         }
         if ($request->stream_id) {
-            $query->whereHas('student', fn($q) => $q->where('stream_id', $request->stream_id));
+            $query->where('stream_id', $request->stream_id);
         }
         if ($request->student_id) {
             $query->where('student_id', $request->student_id);
@@ -219,6 +232,8 @@ class FeeController extends Controller
                         'fee_type_id' => $feeType->id,
                         'total_amount'=> $amount,
                         'term_id'     => $request->term_id,
+                        'class_id'    => $student->class_id,     // freeze
+                        'stream_id'   => $student->stream_id,    // freeze
                         'status'      => 'pending',
                     ]);
                     $created++;
@@ -246,8 +261,9 @@ class FeeController extends Controller
         ]);
 
         $studentId = $request->student_id;
-        $termId   = $request->term_id;
-        $assigned = [];
+        $termId    = $request->term_id;
+        $student   = Student::find($studentId);
+        $assigned  = [];
 
         foreach ($request->fees as $feeData) {
             $feeType = FeeType::find($feeData['fee_type_id']);
@@ -260,6 +276,8 @@ class FeeController extends Controller
                 ],
                 [
                     'total_amount' => $feeData['amount'],
+                    'class_id'     => $student->class_id,
+                    'stream_id'    => $student->stream_id,
                 ]
             );
 
@@ -288,22 +306,24 @@ class FeeController extends Controller
         ]);
 
         $feeType = FeeType::with('amounts')->find($request->fee_type_id);
-        $amount = $this->getAmountForClass($feeType, $request->class_id, $request->stream_id);
+        $amount  = $this->getAmountForClass($feeType, $request->class_id, $request->stream_id);
 
         $students = Student::where('class_id', $request->class_id)
             ->when($request->stream_id, fn($q) => $q->where('stream_id', $request->stream_id))
-            ->pluck('id');
+            ->get(['id', 'class_id', 'stream_id']);
 
         $count = 0;
-        foreach ($students as $studentId) {
+        foreach ($students as $student) {
             StudentFee::firstOrCreate(
                 [
-                    'student_id'  => $studentId,
+                    'student_id'  => $student->id,
                     'fee_type_id' => $feeType->id,
                     'term_id'     => $request->term_id,
                 ],
                 [
                     'total_amount' => $amount,
+                    'class_id'     => $student->class_id,
+                    'stream_id'    => $student->stream_id,
                     'status'       => 'pending',
                 ]
             );
@@ -364,7 +384,7 @@ class FeeController extends Controller
     }
 
     // -------------------------------------------------
-    // PAYMENTS
+    // PAYMENTS (with term‑order enforcement)
     // -------------------------------------------------
     public function recordPayment(Request $request)
     {
@@ -377,6 +397,23 @@ class FeeController extends Controller
         ]);
 
         $studentFee = StudentFee::with('term')->findOrFail($request->student_fee_id);
+        $studentId  = $studentFee->student_id;
+        $termId     = $studentFee->term_id;
+
+        // Check if there are earlier unpaid terms
+        $earliestUnpaid = StudentFee::where('student_id', $studentId)
+            ->where('status', '!=', 'paid')
+            ->with('term')
+            ->get()
+            ->sortBy(fn($fee) => $fee->term->start_date)
+            ->first();
+
+        if ($earliestUnpaid && $earliestUnpaid->term_id !== $termId) {
+            return response()->json([
+                'message' => "Please clear fees for {$earliestUnpaid->term->name} before paying for this term.",
+            ], 422);
+        }
+
         $newPaid = $studentFee->paid_amount + $request->amount;
 
         if ($newPaid > $studentFee->total_amount) {
@@ -452,7 +489,7 @@ class FeeController extends Controller
     // -------------------------------------------------
     public function downloadInvoice($studentFeeId)
     {
-        $studentFee = StudentFee::with('student', 'feeType', 'payments', 'term')->findOrFail($studentFeeId);
+        $studentFee = StudentFee::with(['student.class', 'feeType', 'payments', 'term'])->findOrFail($studentFeeId);
 
         if (!$studentFee->invoice_number) {
             $studentFee->invoice_number = $this->generateInvoiceNumber($studentFee->id);
@@ -462,12 +499,16 @@ class FeeController extends Controller
         $html = $this->generateInvoiceHtml($studentFee);
         $pdf = Pdf::loadHTML($html);
 
-        return $pdf->download('Invoice_' . $studentFee->invoice_number . '.pdf');
+        $student = $studentFee->student;
+        $class = $student->class->name ?? 'Class';
+        $fileName = 'Invoice_' . $student->first_name . '_' . $student->last_name . '_' . $class . '.pdf';
+
+        return $pdf->download($fileName);
     }
 
     public function downloadFeeReceipt($studentFeeId)
     {
-        $studentFee = StudentFee::with('student', 'feeType', 'payments', 'term')->findOrFail($studentFeeId);
+        $studentFee = StudentFee::with(['student.class', 'feeType', 'payments', 'term'])->findOrFail($studentFeeId);
 
         if ($studentFee->status !== 'paid') {
             return response()->json(['message' => 'Receipt available only when fee is fully paid.'], 422);
@@ -476,10 +517,14 @@ class FeeController extends Controller
         $html = $this->generateReceiptHtml($studentFee);
         $pdf = Pdf::loadHTML($html);
 
-        return $pdf->download('Receipt_' . $studentFee->student->first_name . '_' . $studentFee->student->last_name . '.pdf');
+        $student = $studentFee->student;
+        $class = $student->class->name ?? 'Class';
+        $fileName = 'Receipt_' . $student->first_name . '_' . $student->last_name . '_' . $class . '.pdf';
+
+        return $pdf->download($fileName);
     }
 
-    // Legacy per‑payment receipt (kept for backward compatibility, not used by current frontend)
+    // Legacy per‑payment receipt (kept for backward compatibility)
     public function downloadReceipt($paymentId)
     {
         $payment = Payment::with('studentFee.student', 'studentFee.feeType')->findOrFail($paymentId);
@@ -520,7 +565,7 @@ class FeeController extends Controller
     // -------------------------------------------------
     public function bankDetails()
     {
-        return response()->json(BankDetail::all());
+        return response()->json(BankDetail::all() ?? []);
     }
 
     public function storeBankDetail(Request $request)
@@ -565,7 +610,20 @@ class FeeController extends Controller
     // -------------------------------------------------
     private function generateInvoiceNumber($feeId)
     {
-        return 'INV-' . strtoupper(Str::random(4)) . '-' . str_pad($feeId, 6, '0', STR_PAD_LEFT);
+        $school = SchoolInformation::first();
+        $prefix = 'INV';
+        if ($school && $school->school_name) {
+            $words = explode(' ', $school->school_name);
+            $initials = '';
+            foreach ($words as $word) {
+                if (strlen($word) > 0) {
+                    $initials .= strtoupper($word[0]);
+                }
+            }
+            $initials = substr($initials, 0, 3);
+            $prefix = 'INV-' . $initials;
+        }
+        return $prefix . '-' . str_pad($feeId, 6, '0', STR_PAD_LEFT);
     }
 
     private function getAmountForClass(FeeType $feeType, $classId, $streamId = null)
@@ -603,93 +661,131 @@ class FeeController extends Controller
         $school  = SchoolInformation::first();
         $logoBase64 = $this->getLogoBase64();
 
-        $html = '<!DOCTYPE html><html><head><meta charset="utf-8"><title>Invoice ' . $studentFee->invoice_number . '</title>
+        $contactLines = [];
+        if ($school) {
+            if ($school->postal_address) $contactLines[] = $school->postal_address;
+            $phones = [];
+            if ($school->phone_primary) $phones[] = $school->phone_primary;
+            if ($school->phone_secondary) $phones[] = $school->phone_secondary;
+            if (!empty($phones)) $contactLines[] = '📞 ' . implode(' | ', $phones);
+            $emails = [];
+            if ($school->email_primary) $emails[] = $school->email_primary;
+            if ($school->email_secondary) $emails[] = $school->email_secondary;
+            if (!empty($emails)) $contactLines[] = '✉️ ' . implode(' | ', $emails);
+        }
+        $contactHtml = implode('<br>', $contactLines);
+
+        $statusClass = $studentFee->status === 'paid' ? 'status-paid' : ($studentFee->status === 'partial' ? 'status-partial' : 'status-pending');
+
+        $html = '<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>Invoice ' . $studentFee->invoice_number . '</title>
         <style>
-            body { font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif; margin: 0; padding: 30px; color: #1f2937; }
-            .invoice-container { max-width: 800px; margin: 0 auto; border: 1px solid #e5e7eb; border-radius: 12px; padding: 40px; box-shadow: 0 4px 12px rgba(0,0,0,0.05); }
-            .header { display: flex; justify-content: space-between; align-items: center; border-bottom: 3px solid #2563eb; padding-bottom: 20px; margin-bottom: 30px; }
-            .school-logo { width: 100px; height: 100px; object-fit: contain; margin-right: 20px; }
-            .school-name { font-size: 24px; font-weight: 700; color: #1e3a8a; margin: 0 0 5px 0; }
-            .school-details { font-size: 12px; color: #4b5563; line-height: 1.5; }
-            .invoice-title { text-align: right; }
-            .invoice-title h2 { font-size: 28px; color: #2563eb; margin: 0; text-transform: uppercase; letter-spacing: 1px; }
-            .invoice-meta { font-size: 12px; color: #6b7280; margin-top: 5px; }
-            .section-title { font-size: 16px; font-weight: 600; color: #1e3a8a; background: #eff6ff; padding: 8px 15px; border-radius: 6px; margin: 25px 0 15px 0; }
-            .two-columns { display: flex; gap: 30px; }
-            .two-columns > div { flex: 1; }
-            table { width: 100%; border-collapse: collapse; }
-            th { background: #f8fafc; padding: 12px; text-align: left; font-weight: 600; font-size: 13px; color: #374151; border-bottom: 2px solid #e5e7eb; }
-            td { padding: 12px; font-size: 13px; border-bottom: 1px solid #f3f4f6; }
-            .status-paid { background: #d1fae5; color: #065f46; padding: 4px 10px; border-radius: 12px; font-weight: 600; font-size: 12px; }
-            .status-partial { background: #fef3c7; color: #92400e; padding: 4px 10px; border-radius: 12px; font-weight: 600; font-size: 12px; }
-            .status-pending { background: #fee2e2; color: #991b1b; padding: 4px 10px; border-radius: 12px; font-weight: 600; font-size: 12px; }
-            .footer { margin-top: 40px; border-top: 1px solid #e5e7eb; padding-top: 20px; font-size: 11px; color: #9ca3af; text-align: center; }
-            .bank-details { background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 8px; padding: 15px; margin-top: 20px; }
+            * { margin: 0; padding: 0; box-sizing: border-box; }
+            body { font-family: "Inter", "Segoe UI", system-ui, -apple-system, sans-serif; background: #f8fafc; color: #1e293b; padding: 40px 20px; }
+            .invoice-card { max-width: 800px; margin: 0 auto; background: #fff; border-radius: 20px; box-shadow: 0 20px 25px -5px rgba(0,0,0,0.05), 0 8px 10px -6px rgba(0,0,0,0.02); overflow: hidden; }
+            .invoice-header { padding: 30px 40px 20px; border-bottom: 1px solid #e2e8f0; text-align: center; }
+            .school-logo { width: 80px; height: 80px; object-fit: contain; margin-bottom: 15px; }
+            .school-name { font-size: 24px; font-weight: 700; color: #0f172a; margin-bottom: 8px; }
+            .school-contact { font-size: 13px; color: #64748b; line-height: 1.6; }
+            .invoice-badge { margin-top: 20px; }
+            .invoice-badge .label { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: #64748b; }
+            .invoice-badge .number { font-size: 28px; font-weight: 800; color: #2563eb; margin: 5px 0; }
+            .invoice-badge .term { font-size: 13px; color: #64748b; }
+            .student-section { padding: 20px 40px; border-bottom: 1px solid #f1f5f9; background: #f8fafc; }
+            .student-grid { display: flex; gap: 40px; }
+            .student-grid div { flex: 1; }
+            .student-grid .label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: #64748b; margin-bottom: 4px; }
+            .student-grid .value { font-size: 16px; font-weight: 600; color: #0f172a; }
+            .fee-details { padding: 30px 40px; }
+            .section-title { font-size: 18px; font-weight: 700; color: #0f172a; margin-bottom: 20px; }
+            .fee-table { width: 100%; border-collapse: collapse; }
+            .fee-table th { background: #f1f5f9; padding: 12px 16px; text-align: left; font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; color: #475569; font-weight: 600; }
+            .fee-table td { padding: 14px 16px; font-size: 15px; border-bottom: 1px solid #f1f5f9; }
+            .status-badge { display: inline-block; padding: 6px 14px; border-radius: 20px; font-size: 12px; font-weight: 600; }
+            .status-paid { background: #d1fae5; color: #065f46; }
+            .status-partial { background: #fef3c7; color: #92400e; }
+            .status-pending { background: #fee2e2; color: #991b1b; }
+            .payment-history { padding: 0 40px 30px; }
+            .bank-details { padding: 0 40px 30px; }
+            .bank-item { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 12px; padding: 16px; margin-bottom: 10px; }
+            .bank-item strong { display: block; margin-bottom: 4px; color: #0f172a; }
+            .footer { padding: 20px 40px; border-top: 1px solid #f1f5f9; background: #f8fafc; text-align: center; font-size: 12px; color: #94a3b8; }
         </style></head><body>
-        <div class="invoice-container">
-            <div class="header">
-                <div style="display: flex; align-items: center;">';
+        <div class="invoice-card">
+            <div class="invoice-header">
+                <div>';
                 if ($logoBase64) {
                     $html .= '<img src="' . $logoBase64 . '" class="school-logo" alt="Logo">';
                 }
-                $html .= '<div><h1 class="school-name">' . ($school->school_name ?? 'School Name') . '</h1><div class="school-details">';
-                if ($school->postal_address) $html .= $school->postal_address . '<br>';
-                if ($school->phone_primary) $html .= '📞 ' . $school->phone_primary . '<br>';
-                if ($school->email_primary) $html .= '✉️ ' . $school->email_primary;
-                $html .= '</div></div></div>
-                <div class="invoice-title"><h2>Invoice</h2><div class="invoice-meta">' . $studentFee->invoice_number . '<br>Term: ' . ($term ? $term->name : 'N/A') . '</div></div>
-            </div>
-
-            <div class="section-title">Student & Fee Details</div>
-            <div class="two-columns">
-                <div>
-                    <table>
-                        <tr><td width="130"><strong>Student Name</strong></td><td>' . $student->first_name . ' ' . $student->last_name . '</td></tr>
-                        <tr><td><strong>Student Number</strong></td><td>' . $student->student_number . '</td></tr>
-                        <tr><td><strong>Term</strong></td><td>' . ($term ? $term->name : 'N/A') . '</td></tr>
-                    </table>
-                </div>
-                <div>
-                    <table>
-                        <tr><td width="120"><strong>Fee Type</strong></td><td>' . $feeType->name . '</td></tr>
-                        <tr><td><strong>Invoice #</strong></td><td>' . $studentFee->invoice_number . '</td></tr>
-                    </table>
+                $html .= '</div>
+                <div class="school-name">' . ($school->school_name ?? 'School Name') . '</div>
+                <div class="school-contact">' . $contactHtml . '</div>
+                <div class="invoice-badge">
+                    <div class="label">Invoice</div>
+                    <div class="number">' . $studentFee->invoice_number . '</div>
+                    <div class="term">' . ($term ? $term->name : 'N/A') . '</div>
                 </div>
             </div>
 
-            <div class="section-title">Payment Summary</div>
-            <table>
-                <thead><tr><th>Total Amount</th><th>Paid</th><th>Balance</th><th>Status</th></tr></thead>
-                <tbody><tr>
-                    <td>MK ' . number_format($studentFee->total_amount, 2) . '</td>
-                    <td>MK ' . number_format($studentFee->paid_amount, 2) . '</td>
-                    <td>MK ' . number_format($balance, 2) . '</td>
-                    <td>';
-                    if ($studentFee->status === 'paid') $html .= '<span class="status-paid">Paid</span>';
-                    elseif ($studentFee->status === 'partial') $html .= '<span class="status-partial">Partial</span>';
-                    else $html .= '<span class="status-pending">Pending</span>';
-        $html .= '</td></tr></tbody></table>';
+            <div class="student-section">
+                <div class="student-grid">
+                    <div>
+                        <div class="label">Student Name</div>
+                        <div class="value">' . $student->first_name . ' ' . $student->last_name . '</div>
+                    </div>
+                    <div>
+                        <div class="label">Student Number</div>
+                        <div class="value">' . $student->student_number . '</div>
+                    </div>
+                    <div>
+                        <div class="label">Term</div>
+                        <div class="value">' . ($term ? $term->name : 'N/A') . '</div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="fee-details">
+                <div class="section-title">Fee Summary</div>
+                <table class="fee-table">
+                    <thead><tr><th>Fee Type</th><th>Total Amount</th><th>Paid</th><th>Balance</th><th>Status</th></tr></thead>
+                    <tbody><tr>
+                        <td>' . $feeType->name . '</td>
+                        <td>MK ' . number_format($studentFee->total_amount, 2) . '</td>
+                        <td>MK ' . number_format($studentFee->paid_amount, 2) . '</td>
+                        <td>MK ' . number_format($balance, 2) . '</td>
+                        <td><span class="status-badge ' . $statusClass . '">' . ucfirst($studentFee->status) . '</span></td>
+                    </tr></tbody>
+                </table>
+            </div>';
 
         if ($studentFee->payments->isNotEmpty()) {
-            $html .= '<div class="section-title">Payment History</div><table><thead><tr><th>Date</th><th>Amount</th><th>Receipt</th><th>Method</th></tr></thead><tbody>';
+            $html .= '<div class="payment-history">
+                <div class="section-title">Payment History</div>
+                <table class="fee-table">
+                    <thead><tr><th>Date</th><th>Amount</th><th>Receipt</th><th>Method</th></tr></thead>
+                    <tbody>';
             foreach ($studentFee->payments as $p) {
                 $html .= '<tr><td>' . $p->payment_date . '</td><td>MK ' . number_format($p->amount, 2) . '</td><td>' . $p->receipt_number . '</td><td>' . $p->method . '</td></tr>';
             }
-            $html .= '</tbody></table>';
+            $html .= '</tbody></table></div>';
         }
 
         $bankDetails = BankDetail::all();
         if ($bankDetails->isNotEmpty()) {
-            $html .= '<div class="section-title">Payment Methods</div>';
+            $html .= '<div class="bank-details"><div class="section-title">Payment Methods</div>';
             foreach ($bankDetails as $bank) {
-                $html .= '<div class="bank-details"><strong>' . $bank->bank_name . '</strong><br>Account Name: ' . $bank->account_name . '<br>Account Number: ' . $bank->account_number;
-                if ($bank->branch) $html .= '<br>Branch: ' . $bank->branch;
-                if ($bank->swift_code) $html .= '<br>Swift Code: ' . $bank->swift_code;
-                $html .= '</div>';
+                $html .= '<div class="bank-item">
+                    <strong>' . $bank->bank_name . '</strong>
+                    Account Name: ' . $bank->account_name . '<br>
+                    Account Number: ' . $bank->account_number .
+                    ($bank->branch ? '<br>Branch: ' . $bank->branch : '') .
+                    ($bank->swift_code ? '<br>Swift Code: ' . $bank->swift_code : '') .
+                '</div>';
             }
+            $html .= '</div>';
         }
 
-        $html .= '<div class="footer">' . ($school->school_name ?? '') . ' – ' . ($school->motto ?? '') . '<br>This invoice is computer-generated and does not require a signature.</div></div></body></html>';
+        $html .= '<div class="footer">' . ($school->school_name ?? '') . ' – ' . ($school->motto ?? '') . '<br>This invoice is computer-generated and does not require a signature.</div>
+        </div></body></html>';
 
         return $html;
     }
@@ -704,43 +800,72 @@ class FeeController extends Controller
 
         $receiptNumber = 'RCT-' . strtoupper(Str::random(8));
 
-        $html = '<!DOCTYPE html><html><head><meta charset="utf-8"><title>Fee Receipt</title>
+        $html = '<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>Receipt</title>
         <style>
-            body { font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif; margin: 0; padding: 30px; color: #1f2937; }
-            .receipt-container { max-width: 600px; margin: 0 auto; border: 2px solid #10b981; border-radius: 12px; padding: 40px; box-shadow: 0 4px 12px rgba(0,0,0,0.05); text-align: center; }
-            .receipt-header { border-bottom: 2px solid #10b981; padding-bottom: 20px; margin-bottom: 25px; }
-            .school-logo { width: 90px; height: 90px; object-fit: contain; margin-bottom: 10px; }
-            .school-name { font-size: 22px; font-weight: 700; color: #1e3a8a; margin: 0; }
-            .receipt-title { font-size: 26px; font-weight: 800; color: #10b981; letter-spacing: 1px; margin: 15px 0 5px 0; }
-            .receipt-number { font-size: 14px; color: #6b7280; }
-            .info-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; text-align: left; margin: 25px 0; }
-            .info-grid div { padding: 8px 0; border-bottom: 1px solid #f3f4f6; }
-            .info-grid .label { font-weight: 600; color: #4b5563; font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; }
-            .info-grid .value { font-size: 14px; color: #1f2937; }
-            .amount-box { background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 10px; padding: 20px; margin-top: 20px; }
-            .amount-paid { font-size: 32px; font-weight: 800; color: #065f46; }
-            .footer { margin-top: 30px; font-size: 11px; color: #9ca3af; text-align: center; border-top: 1px solid #e5e7eb; padding-top: 15px; }
+            * { margin: 0; padding: 0; box-sizing: border-box; }
+            body { font-family: "Inter", "Segoe UI", system-ui, -apple-system, sans-serif; background: #f0fdf4; color: #1e293b; padding: 40px 20px; }
+            .receipt-card { max-width: 600px; margin: 0 auto; background: #fff; border-radius: 20px; box-shadow: 0 20px 25px -5px rgba(0,0,0,0.05), 0 8px 10px -6px rgba(0,0,0,0.02); overflow: hidden; }
+            .receipt-header { padding: 30px 40px; text-align: center; border-bottom: 2px solid #10b981; }
+            .school-logo { width: 80px; height: 80px; object-fit: contain; margin-bottom: 15px; }
+            .school-name { font-size: 22px; font-weight: 700; color: #0f172a; margin-bottom: 8px; }
+            .school-contact { font-size: 13px; color: #64748b; line-height: 1.6; }
+            .receipt-badge { margin: 20px 0 10px; }
+            .receipt-badge .label { font-size: 28px; font-weight: 800; color: #10b981; }
+            .receipt-number { font-size: 13px; color: #64748b; }
+            .info-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; padding: 30px 40px; background: #f8fafc; }
+            .info-grid .item .label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: #64748b; margin-bottom: 4px; }
+            .info-grid .item .value { font-size: 16px; font-weight: 600; color: #0f172a; }
+            .amount-box { margin: 30px 40px; background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 16px; padding: 30px; text-align: center; }
+            .amount-box .label { font-size: 14px; color: #065f46; margin-bottom: 8px; }
+            .amount-box .value { font-size: 36px; font-weight: 800; color: #065f46; }
+            .footer { padding: 20px 40px; border-top: 1px solid #f1f5f9; text-align: center; font-size: 12px; color: #94a3b8; }
         </style></head><body>
-        <div class="receipt-container">
-            <div class="receipt-header">';
+        <div class="receipt-card">
+            <div class="receipt-header">
+                <div>';
                 if ($logoBase64) {
                     $html .= '<img src="' . $logoBase64 . '" class="school-logo" alt="Logo">';
                 }
-                $html .= '<h1 class="school-name">' . ($school->school_name ?? 'School Name') . '</h1><div class="receipt-title">PAID RECEIPT</div><div class="receipt-number">Receipt #: ' . $receiptNumber . '</div>
+                $html .= '</div>
+                <div class="school-name">' . ($school->school_name ?? 'School Name') . '</div>
+                <div class="school-contact">' . $this->getContactHtml($school) . '</div>
+                <div class="receipt-badge"><div class="label">PAID RECEIPT</div></div>
+                <div class="receipt-number">Receipt #: ' . $receiptNumber . '</div>
             </div>
 
             <div class="info-grid">
-                <div><div class="label">Student</div><div class="value">' . $student->first_name . ' ' . $student->last_name . '</div></div>
-                <div><div class="label">Student Number</div><div class="value">' . $student->student_number . '</div></div>
-                <div><div class="label">Fee Type</div><div class="value">' . $feeType->name . '</div></div>
-                <div><div class="label">Term</div><div class="value">' . ($term ? $term->name : 'N/A') . '</div></div>
-                <div><div class="label">Total Fee</div><div class="value">MK ' . number_format($studentFee->total_amount, 2) . '</div></div>
-                <div><div class="label">Paid On</div><div class="value">' . ($studentFee->payments->last() ? $studentFee->payments->last()->payment_date : now()->toDateString()) . '</div></div>
+                <div class="item">
+                    <div class="label">Student</div>
+                    <div class="value">' . $student->first_name . ' ' . $student->last_name . '</div>
+                </div>
+                <div class="item">
+                    <div class="label">Student Number</div>
+                    <div class="value">' . $student->student_number . '</div>
+                </div>
+                <div class="item">
+                    <div class="label">Fee Type</div>
+                    <div class="value">' . $feeType->name . '</div>
+                </div>
+                <div class="item">
+                    <div class="label">Term</div>
+                    <div class="value">' . ($term ? $term->name : 'N/A') . '</div>
+                </div>
+                <div class="item">
+                    <div class="label">Total Fee</div>
+                    <div class="value">MK ' . number_format($studentFee->total_amount, 2) . '</div>
+                </div>
+                <div class="item">
+                    <div class="label">Paid On</div>
+                    <div class="value">' . ($studentFee->payments->last() ? $studentFee->payments->last()->payment_date : now()->toDateString()) . '</div>
+                </div>
             </div>
 
-            <div class="amount-box"><div style="font-size:14px; color:#065f46; margin-bottom:5px;">Total Amount Paid</div><div class="amount-paid">MK ' . number_format($studentFee->paid_amount, 2) . '</div></div>
+            <div class="amount-box">
+                <div class="label">Total Amount Paid</div>
+                <div class="value">MK ' . number_format($studentFee->paid_amount, 2) . '</div>
+            </div>
 
-            <div class="footer">' . ($school->school_name ?? '') . ' – ' . ($school->motto ?? '') . '<br>This receipt is computer-generated and does not require a signature.</div>
+            <div class="footer">' . ($school->school_name ?? '') . ' – ' . ($school->motto ?? '') . '<br>This receipt is computer-generated.</div>
         </div></body></html>';
 
         return $html;
@@ -792,5 +917,22 @@ class FeeController extends Controller
         </div></body></html>';
 
         return $html;
+    }
+
+    private function getContactHtml($school)
+    {
+        $lines = [];
+        if ($school) {
+            if ($school->postal_address) $lines[] = $school->postal_address;
+            $phones = [];
+            if ($school->phone_primary) $phones[] = $school->phone_primary;
+            if ($school->phone_secondary) $phones[] = $school->phone_secondary;
+            if (!empty($phones)) $lines[] = '📞 ' . implode(' | ', $phones);
+            $emails = [];
+            if ($school->email_primary) $emails[] = $school->email_primary;
+            if ($school->email_secondary) $emails[] = $school->email_secondary;
+            if (!empty($emails)) $lines[] = '✉️ ' . implode(' | ', $emails);
+        }
+        return implode('<br>', $lines);
     }
 }

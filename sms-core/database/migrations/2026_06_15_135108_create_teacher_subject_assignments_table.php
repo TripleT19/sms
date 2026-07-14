@@ -11,7 +11,7 @@ return new class extends Migration
      */
     public function up()
     {
-        Schema::create('teacher_subject_assignments', function (Blueprint $table) {
+       Schema::create('teacher_subject_assignments', function (Blueprint $table) {
             $table->id();
             $table->foreignId('user_id')->constrained()->cascadeOnDelete();
             $table->foreignId('subject_id')->constrained()->cascadeOnDelete();
@@ -19,8 +19,10 @@ return new class extends Migration
             $table->foreignId('stream_id')->nullable()->constrained()->nullOnDelete();
             $table->timestamps();
 
-            // Prevent duplicate assignment for the same teacher in the same class/stream
-            $table->unique(['user_id', 'subject_id', 'class_id', 'stream_id']);
+            $table->unique(
+                ['user_id', 'subject_id', 'class_id', 'stream_id'],
+                'tsa_unique'
+            );
         });
     }
 

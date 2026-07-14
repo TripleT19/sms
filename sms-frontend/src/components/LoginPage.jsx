@@ -1,5 +1,4 @@
-// src/components/LoginPage.jsx
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   FaUser,
@@ -9,8 +8,8 @@ import {
   FaArrowLeft,
   FaGraduationCap,
 } from 'react-icons/fa';
+import Modal from './Modal';
 
-// 🔁 Replace with your actual Laravel API URL
 const API_BASE = 'https://sturdy-spoon-x5qpgx9gq67j297x-8000.app.github.dev';
 
 const LoginPage = () => {
@@ -20,13 +19,40 @@ const LoginPage = () => {
   const [showPassword, setShowPassword] = useState(false);
 
   const [loginData, setLoginData] = useState({
-    identifier: '', // email or username
+    identifier: '',
     password: '',
   });
 
   const [resetEmail, setResetEmail] = useState('');
   const [resetSent, setResetSent] = useState(false);
   const [loading, setLoading] = useState(false);
+
+  // Modal state
+  const [modal, setModal] = useState({ isOpen: false, type: 'success', message: '' });
+
+  // School branding
+  const [schoolInfo, setSchoolInfo] = useState(null);
+
+  // Fetch school info on mount
+  useEffect(() => {
+    const fetchSchoolInfo = async () => {
+      try {
+        const res = await fetch(`${API_BASE}/api/school-info`, {
+          headers: { Accept: 'application/json' },
+        });
+        if (res.ok) {
+          const data = await res.json();
+          setSchoolInfo(data);
+        }
+      } catch (err) {
+        // ignore – keep default branding
+      }
+    };
+    fetchSchoolInfo();
+  }, []);
+
+  const showModal = (type, message) => setModal({ isOpen: true, type, message });
+  const closeModal = () => setModal(prev => ({ ...prev, isOpen: false }));
 
   // ---------- Login ----------
   const handleLoginChange = (e) => {
@@ -41,7 +67,7 @@ const LoginPage = () => {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Accept': 'application/json',
+          Accept: 'application/json',
         },
         body: JSON.stringify(loginData),
       });
@@ -49,16 +75,15 @@ const LoginPage = () => {
       const data = await response.json();
 
       if (response.ok) {
-        // Store token and user roles (needed for sidebar & route guards)
         localStorage.setItem('auth_token', data.token);
         localStorage.setItem('user_roles', JSON.stringify(data.user.roles || []));
         navigate('/dashboard');
       } else {
-        alert(data.message || 'Login failed. Please check your credentials.');
+        showModal('error', data.message || 'Login failed. Please check your credentials.');
       }
     } catch (error) {
       console.error('Login error:', error);
-      alert('Network error, please try again.');
+      showModal('error', 'Network error, please try again.');
     } finally {
       setLoading(false);
     }
@@ -73,13 +98,14 @@ const LoginPage = () => {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Accept': 'application/json',
+          Accept: 'application/json',
         },
         body: JSON.stringify({ email: resetEmail }),
       });
 
       if (response.ok) {
         setResetSent(true);
+        showModal('success', 'Password reset link sent! Check your inbox.');
         setTimeout(() => {
           setResetSent(false);
           setIsForgotPassword(false);
@@ -87,32 +113,48 @@ const LoginPage = () => {
         }, 3000);
       } else {
         const data = await response.json();
-        alert(data.message || 'Failed to send reset link.');
+        showModal('error', data.message || 'Failed to send reset link.');
       }
     } catch (error) {
       console.error('Forgot password error:', error);
-      alert('Network error, please try again.');
+      showModal('error', 'Network error, please try again.');
     } finally {
       setLoading(false);
     }
   };
 
+  // Branding helpers
+  const schoolName = schoolInfo?.school_name || 'My School';          // use stored name or generic
+  const logoSrc = schoolInfo?.logo_url ? `${API_BASE}/${schoolInfo.logo_url}` : null;
+  const motto = schoolInfo?.motto;
+
   return (
     <div className="min-h-screen flex items-center justify-center bg-blue-950 p-4">
+      <Modal
+        isOpen={modal.isOpen}
+        type={modal.type}
+        message={modal.message}
+        onClose={closeModal}
+      />
+
       {/* Main Card */}
       <div className="w-full max-w-4xl bg-white rounded-2xl shadow-2xl overflow-hidden flex flex-col md:flex-row">
         {/* Left Side – Branding */}
         <div className="md:w-1/2 bg-gradient-to-b from-blue-900 to-blue-950 text-white p-10 flex flex-col justify-center items-center text-center">
-          <FaGraduationCap className="text-6xl mb-6 text-blue-300" />
-          <h1 className="text-4xl font-bold mb-2">EduManage</h1>
-          <p className="text-lg text-blue-200 mb-6">School Management System</p>
-          <div className="hidden md:block mt-4">
+          {logoSrc ? (
             <img
-              src="https://via.placeholder.com/220x180?text=School+Illustration"
-              alt="School illustration"
-              className="rounded-lg opacity-90"
+              src={logoSrc}
+              alt={schoolName}
+              className="h-20 w-auto object-contain mb-6"
             />
-          </div>
+          ) : (
+            <FaGraduationCap className="text-6xl mb-6 text-blue-300" />
+          )}
+          <h1 className="text-4xl font-bold mb-1">{schoolName}</h1>
+          <p className="text-lg text-blue-200 font-medium mb-2">School Management System</p>
+          {motto && (
+            <p className="text-base text-blue-300 italic">{motto}</p>
+          )}
           <p className="mt-6 text-sm text-blue-300">
             Empowering teachers, students & parents
           </p>

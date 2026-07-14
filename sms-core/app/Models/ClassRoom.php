@@ -7,7 +7,7 @@ use Illuminate\Database\Eloquent\Model;
 class ClassRoom extends Model
 {
     protected $table = 'classes';
-    protected $fillable = ['name'];
+    protected $fillable = ['name', 'order', 'grading_type'];
 
     /**
      * Streams attached to this class (many-to-many via class_stream).

@@ -1,21 +1,21 @@
 {
-  "name": "sms-core",
-  "build": {
-    "dockerfile": "Dockerfile"
-  },
-
-  "features": {},
+  "name": "SMS Dev Container",
+  "dockerComposeFile": "docker-compose.yml",
+  "service": "app",
+  "workspaceFolder": "/workspaces/sms",
 
   "customizations": {
     "vscode": {
       "extensions": [
         "bmewburn.vscode-intelephense-client",
-        "xdebug.php-debug"
+        "esbenp.prettier-vscode",
+        "dbaeumer.vscode-eslint",
+        "ms-azuretools.vscode-docker"
       ]
     }
   },
 
-  "postCreateCommand": "php -v && php -m",
+  "forwardPorts": [8000, 5173, 3306],
 
-  "remoteUser": "vscode"
+  "postCreateCommand": "bash .devcontainer/post-create.sh"
 }

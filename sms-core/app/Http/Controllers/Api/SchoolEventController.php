@@ -3,11 +3,12 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Models\Notification;
+use App\Models\Role;
 use App\Models\SchoolEvent;
 use App\Models\User;
-use App\Models\Role;
-use App\Models\Notification;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Log;      // ← added import
 
 class SchoolEventController extends Controller
 {
@@ -17,7 +18,7 @@ class SchoolEventController extends Controller
             'creator:id,first_name,last_name',
             'class:id,name',
             'stream:id,name',
-            'teachers:id,first_name,last_name'
+            'teachers:id,first_name,last_name',
         ]);
 
         if ($request->filled('type')) {
@@ -137,7 +138,7 @@ class SchoolEventController extends Controller
         // ---- Teachers (when target_teachers is checked OR event is a task) ----
         if ($event->target_teachers || $event->type === 'task') {
             $teacherRoleIds = Role::whereIn('name', [
-                'Teacher', 'Headteacher', 'Deputy Headteacher', 'Head of Department'
+                'Teacher', 'Headteacher', 'Deputy Headteacher', 'Head of Department',
             ])->pluck('id');
 
             $teacherIds = User::whereHas('roles', function ($q) use ($teacherRoleIds) {
@@ -181,10 +182,10 @@ class SchoolEventController extends Controller
             }
         }
 
-        // ---- Remove duplicates and log who is about to be notified ----
+        // ---- Remove duplicates ----
         $userIds = $userIds->unique()->values();
 
-        \Log::info('Event notification recipients', [
+        Log::info('Event notification recipients', [
             'event_id' => $event->id,
             'user_ids' => $userIds->toArray(),
         ]);

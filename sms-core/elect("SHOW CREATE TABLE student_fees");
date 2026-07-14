@@ -1,0 +1,25 @@
+[90m= [39m[
+    {#8274
+      +"[1mTable[22m": [32m"[39m[32mpayments[39m[32m"[39m,
+      +"[1mCreate Table[22m": <<<[32mEOS[39m
+        [32mCREATE TABLE `payments` ([39m
+        [32m  `id` bigint unsigned NOT NULL AUTO_INCREMENT,[39m
+        [32m  `student_fee_id` bigint unsigned NOT NULL,[39m
+        [32m  `amount` decimal(10,2) NOT NULL,[39m
+        [32m  `payment_date` date NOT NULL,[39m
+        [32m  `receipt_number` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL,[39m
+        [32m  `method` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,[39m
+        [32m  `notes` text COLLATE utf8mb4_unicode_ci,[39m
+        [32m  `created_at` timestamp NULL DEFAULT NULL,[39m
+        [32m  `updated_at` timestamp NULL DEFAULT NULL,[39m
+        [32m  `term_id` bigint unsigned DEFAULT NULL,[39m
+        [32m  PRIMARY KEY (`id`),[39m
+        [32m  UNIQUE KEY `payments_receipt_number_unique` (`receipt_number`),[39m
+        [32m  KEY `payments_student_fee_id_foreign` (`student_fee_id`),[39m
+        [32m  KEY `payments_term_id_foreign` (`term_id`),[39m
+        [32m  CONSTRAINT `payments_student_fee_id_foreign` FOREIGN KEY (`student_fee_id`) REFERENCES `student_fees` (`id`) ON DELETE CASCADE,[39m
+        [32m  CONSTRAINT `payments_term_id_foreign` FOREIGN KEY (`term_id`) REFERENCES `terms` (`id`) ON DELETE SET NULL[39m
+        [32m) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci[39m
+        [32mEOS[39m,
+    },
+  ]

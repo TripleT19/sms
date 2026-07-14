@@ -221,6 +221,7 @@ class AttendanceController extends Controller
 
     /**
      * Mark (create/update) a single attendance record.
+     * Always stores the student's actual stream.
      */
     public function mark(Request $request)
     {
@@ -235,16 +236,20 @@ class AttendanceController extends Controller
 
         $user = $request->user();
 
+        // Use the student's actual stream if none provided
+        $streamId = $request->stream_id ?: null;
+        if (empty($streamId)) {
+            $student = Student::find($request->student_id);
+            $streamId = $student ? $student->stream_id : null;
+        }
+
         $record = AttendanceRecord::updateOrCreate(
-            [
-                'student_id' => $request->student_id,
-                'date'       => $request->date,
-            ],
+            ['student_id' => $request->student_id, 'date' => $request->date],
             [
                 'status'    => $request->status,
                 'term_id'   => $request->term_id,
                 'class_id'  => $request->class_id,
-                'stream_id' => $request->stream_id,
+                'stream_id' => $streamId,
                 'marked_by' => $user->id,
             ]
         );

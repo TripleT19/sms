@@ -14,21 +14,11 @@ import FinancePage from './components/FinancePage';
 import SchoolInfoPage from './components/SchoolInfoPage';
 import NotificationsPage from './components/NotificationsPage';
 import PublishGradesPage from './components/PublishGradesPage';
-
-// ---------- Simple placeholder pages for missing views ----------
-const TeacherStudentsPage = () => (
-  <div className="p-6">
-    <h2 className="text-2xl font-semibold text-gray-800">My Students</h2>
-    <p className="text-gray-600 mt-2">List of your students will appear here.</p>
-  </div>
-);
-
-const CurrentRecords = () => (
-  <div className="p-6">
-    <h2 className="text-2xl font-semibold text-gray-800">Current Records</h2>
-    <p className="text-gray-600 mt-2">Your child’s current term records will show here.</p>
-  </div>
-);
+import CurrentRecords from './components/CurrentRecords';
+import ParentMessages from './components/ParentMessages';
+import ParentPayments from './components/ParentPayments';
+import AnnouncementsPage from './components/AnnouncementsPage';
+import StudentsPage from './components/StudentsPage';
 
 const PreviousRecords = () => (
   <div className="p-6">
@@ -37,24 +27,13 @@ const PreviousRecords = () => (
   </div>
 );
 
-const ParentPayments = () => (
-  <div className="p-6">
-    <h2 className="text-2xl font-semibold text-gray-800">Payments</h2>
-    <p className="text-gray-600 mt-2">Your payment history will appear here.</p>
-  </div>
-);
-
-const Announcements = () => (
-  <div className="p-6">
-    <h2 className="text-2xl font-semibold text-gray-800">Announcements</h2>
-    <p className="text-gray-600 mt-2">School and class announcements will be shown here.</p>
-  </div>
-);
-
-// ---------- Role-based access guard ----------
 const ProtectedRoute = ({ allowedRoles, children }) => {
   const token = localStorage.getItem('auth_token');
   if (!token) return <Navigate to="/login" replace />;
+
+  if (!allowedRoles || allowedRoles.length === 0) {
+    return children;
+  }
 
   const stored = localStorage.getItem('user_roles');
   const roles = stored ? JSON.parse(stored) : [];
@@ -63,7 +42,6 @@ const ProtectedRoute = ({ allowedRoles, children }) => {
   return hasAccess ? children : <Navigate to="/dashboard" replace />;
 };
 
-// ---------- Dashboard home placeholder (used as index route) ----------
 const Home = () => (
   <div>
     <h2 className="text-2xl font-semibold mb-4 text-gray-800">Dashboard Overview</h2>
@@ -75,147 +53,50 @@ const Home = () => (
   </div>
 );
 
-// ---------- App Component ----------
 function App() {
   return (
     <BrowserRouter>
       <Routes>
-        {/* Public routes */}
         <Route path="/login" element={<LoginPage />} />
         <Route path="/password-reset" element={<PasswordResetPage />} />
 
-        {/* Dashboard with nested routes */}
         <Route path="/dashboard" element={<Dashboard />}>
           <Route index element={<Home />} />
 
-          {/* Admin only */}
-          <Route
-            path="academic"
-            element={
-              <ProtectedRoute allowedRoles={['Admin']}>
-                <AcademicManagementPage />
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="enrollment"
-            element={
-              <ProtectedRoute allowedRoles={['Admin']}>
-                <StudentEnrollmentPage />
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="users"
-            element={
-              <ProtectedRoute allowedRoles={['Admin']}>
-                <UserManagementPage />
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="settings"
-            element={
-              <ProtectedRoute allowedRoles={['Admin']}>
-                <SchoolInfoPage />
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="publish-grades"
-            element={
-              <ProtectedRoute allowedRoles={['Admin']}>
-                <PublishGradesPage />
-              </ProtectedRoute>
-            }
-          />
+          {/* Admin */}
+          <Route path="academic" element={<ProtectedRoute allowedRoles={['Admin']}><AcademicManagementPage /></ProtectedRoute>} />
+          <Route path="enrollment" element={<ProtectedRoute allowedRoles={['Admin']}><StudentEnrollmentPage /></ProtectedRoute>} />
+          <Route path="users" element={<ProtectedRoute allowedRoles={['Admin']}><UserManagementPage /></ProtectedRoute>} />
+          <Route path="settings" element={<ProtectedRoute allowedRoles={['Admin']}><SchoolInfoPage /></ProtectedRoute>} />
+          <Route path="publish-grades" element={<ProtectedRoute allowedRoles={['Admin']}><PublishGradesPage /></ProtectedRoute>} />
 
-          {/* Finance Officer only */}
-          <Route
-            path="finance"
-            element={
-              <ProtectedRoute allowedRoles={['Finance Officer']}>
-                <FinancePage />
-              </ProtectedRoute>
-            }
-          />
+          {/* Finance Officer */}
+          <Route path="finance" element={<ProtectedRoute allowedRoles={['Finance Officer']}><FinancePage /></ProtectedRoute>} />
 
-          {/* Shared: Admin, Finance Officer, Teacher */}
-          <Route
-            path="events"
-            element={
-              <ProtectedRoute allowedRoles={['Admin', 'Finance Officer', 'Teacher']}>
-                <EventsPage />
-              </ProtectedRoute>
-            }
-          />
+          {/* Shared */}
+          <Route path="events" element={<ProtectedRoute allowedRoles={['Admin', 'Finance Officer', 'Teacher']}><EventsPage /></ProtectedRoute>} />
 
-          {/* Teacher only */}
-          <Route
-            path="grades"
-            element={
-              <ProtectedRoute allowedRoles={['Teacher']}>
-                <GradesPage />
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="students"
-            element={
-              <ProtectedRoute allowedRoles={['Teacher']}>
-                <TeacherStudentsPage />
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="attendance"
-            element={
-              <ProtectedRoute allowedRoles={['Teacher']}>
-                <AttendancePage />
-              </ProtectedRoute>
-            }
-          />
+          {/* Teacher */}
+          <Route path="grades" element={<ProtectedRoute allowedRoles={['Admin', 'Teacher']}><GradesPage /></ProtectedRoute>} />
+          <Route path="students" element={<ProtectedRoute allowedRoles={['Teacher']}><StudentsPage /></ProtectedRoute>} />
+          <Route path="attendance" element={<ProtectedRoute allowedRoles={['Teacher']}><AttendancePage /></ProtectedRoute>} />
 
-          {/* Parent only */}
-          <Route
-            path="current-records"
-            element={
-              <ProtectedRoute allowedRoles={['Parent']}>
-                <CurrentRecords />
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="previous-records"
-            element={
-              <ProtectedRoute allowedRoles={['Parent']}>
-                <PreviousRecords />
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="payments"
-            element={
-              <ProtectedRoute allowedRoles={['Parent']}>
-                <ParentPayments />
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="announcements"
-            element={
-              <ProtectedRoute allowedRoles={['Parent']}>
-                <Announcements />
-              </ProtectedRoute>
-            }
-          />
+          {/* Parent */}
+          <Route path="current-records" element={<ProtectedRoute allowedRoles={['Parent', 'Admin']}><CurrentRecords /></ProtectedRoute>} />
+          <Route path="previous-records" element={<ProtectedRoute allowedRoles={['Parent', 'Admin']}><PreviousRecords /></ProtectedRoute>} />
+          <Route path="payments" element={<ProtectedRoute allowedRoles={['Parent', 'Admin']}><ParentPayments /></ProtectedRoute>} />
 
-          {/* Open to all authenticated users */}
+          {/* Announcements – accessible to all authenticated users */}
+          <Route path="announcements" element={<ProtectedRoute><AnnouncementsPage /></ProtectedRoute>} />
+
+          {/* Messages – accessible to every authenticated user */}
+          <Route path="messages" element={<ProtectedRoute><ParentMessages /></ProtectedRoute>} />
+
+          {/* Common */}
           <Route path="profile" element={<ProfilePage />} />
           <Route path="notifications" element={<NotificationsPage />} />
         </Route>
 
-        {/* Fallback */}
         <Route path="*" element={<Navigate to="/login" replace />} />
       </Routes>
     </BrowserRouter>

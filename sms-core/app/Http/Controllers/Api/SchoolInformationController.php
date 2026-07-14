@@ -12,8 +12,14 @@ class SchoolInformationController extends Controller
     public function show()
     {
         $info = SchoolInformation::first();
-        // Return raw attributes (logo is a path like "school/abc.png")
-        return response()->json($info ?? []);
+        if (!$info) {
+            return response()->json([]);
+        }
+
+        // Return a RELATIVE path for the logo
+        $info->logo_url = $info->logo ? 'storage/' . $info->logo : null;
+
+        return response()->json($info);
     }
 
     public function update(Request $request)

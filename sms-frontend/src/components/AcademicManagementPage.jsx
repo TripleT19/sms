@@ -10,6 +10,9 @@ import {
   FaSearch,
   FaStream,
   FaSpinner,
+  FaSave,
+  FaChevronDown,
+  FaChevronRight,
 } from 'react-icons/fa';
 import Modal from './Modal';
 
@@ -28,10 +31,15 @@ const AcademicManagementPage = () => {
   const [years, setYears] = useState([]);
   const [terms, setTerms] = useState([]);
   const [streams, setStreams] = useState([]);
+  const [competencies, setCompetencies] = useState([]);
 
   const [loading, setLoading] = useState(true);
   const [modal, setModal] = useState({ isOpen: false, type: 'success', message: '' });
   const [confirm, setConfirm] = useState({ isOpen: false, title: '', message: '', action: null });
+
+  // Order editing
+  const [editingOrders, setEditingOrders] = useState({});
+  const [savingOrder, setSavingOrder] = useState(false);
 
   // Search
   const [searchClass, setSearchClass] = useState('');
@@ -39,6 +47,7 @@ const AcademicManagementPage = () => {
   const [searchStream, setSearchStream] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
   const [searchTeacherAssignment, setSearchTeacherAssignment] = useState('');
+  const [searchCompetency, setSearchCompetency] = useState('');
 
   // Modals
   const [classModal, setClassModal] = useState(false);
@@ -80,6 +89,19 @@ const AcademicManagementPage = () => {
   const [availableStreams, setAvailableStreams] = useState([]);
   const [assignmentSaving, setAssignmentSaving] = useState(false);
 
+  // Competency & Skill modals
+  const [competencyModal, setCompetencyModal] = useState(false);
+  const [editingCompetency, setEditingCompetency] = useState(null);
+  const [competencySaving, setCompetencySaving] = useState(false);
+
+  const [skillModal, setSkillModal] = useState(false);
+  const [editingSkill, setEditingSkill] = useState(null);
+  const [selectedCompetencyId, setSelectedCompetencyId] = useState(null);
+  const [skillSaving, setSkillSaving] = useState(false);
+
+  // Expand/collapse competencies
+  const [expandedCompetencies, setExpandedCompetencies] = useState({});
+
   const showModal = (type, msg) => setModal({ isOpen: true, type, message: msg });
   const closeModal = () => setModal(prev => ({ ...prev, isOpen: false }));
 
@@ -98,6 +120,7 @@ const AcademicManagementPage = () => {
       const [
         classesRes, subjectsRes, teachersRes, assignmentsRes,
         yearsRes, termsRes, streamsRes, classesWithStreamsRes,
+        competenciesRes,
       ] = await Promise.all([
         fetch(`${API_BASE}/api/academic/classes`, { headers }),
         fetch(`${API_BASE}/api/academic/subjects`, { headers }),
@@ -107,20 +130,16 @@ const AcademicManagementPage = () => {
         fetch(`${API_BASE}/api/academic/terms/all`, { headers }),
         fetch(`${API_BASE}/api/academic/streams`, { headers }),
         fetch(`${API_BASE}/api/academic/classes-with-streams`, { headers }),
+        fetch(`${API_BASE}/api/academic/competencies`, { headers }),
       ]);
 
-      // Check each response and log if something went wrong
-      if (!classesRes.ok) console.error('Classes endpoint failed', classesRes.status);
-      if (!subjectsRes.ok) console.error('Subjects endpoint failed', subjectsRes.status);
-      if (!teachersRes.ok) console.error('Teachers endpoint failed', teachersRes.status);
-      if (!assignmentsRes.ok) console.error('Teacher-subjects endpoint failed', assignmentsRes.status);
-      if (!yearsRes.ok) console.error('Years endpoint failed', yearsRes.status);
-      if (!termsRes.ok) console.error('Terms endpoint failed', termsRes.status);
-      if (!streamsRes.ok) console.error('Streams endpoint failed', streamsRes.status);
-      if (!classesWithStreamsRes.ok) console.error('Classes-with-streams endpoint failed', classesWithStreamsRes.status);
-
-      // Set state only for successful responses
-      if (classesRes.ok) setClasses(await classesRes.json());
+      if (classesRes.ok) {
+        const clsData = await classesRes.json();
+        setClasses(clsData);
+        const orders = {};
+        clsData.forEach(c => { orders[c.id] = c.order ?? 0; });
+        setEditingOrders(orders);
+      }
       if (subjectsRes.ok) setSubjects(await subjectsRes.json());
       if (teachersRes.ok) setTeachers(await teachersRes.json());
       if (assignmentsRes.ok) setTeacherSubjectAssignments(await assignmentsRes.json());
@@ -128,8 +147,8 @@ const AcademicManagementPage = () => {
       if (termsRes.ok) setTerms(await termsRes.json());
       if (streamsRes.ok) setStreams(await streamsRes.json());
       if (classesWithStreamsRes.ok) setClassesWithStreams(await classesWithStreamsRes.json());
+      if (competenciesRes.ok) setCompetencies(await competenciesRes.json());
 
-      // If any critical data is missing, you can still show a warning
       if (!classesRes.ok && !subjectsRes.ok && !teachersRes.ok) {
         showModal('error', 'Failed to load essential data. Please try again.');
       }
@@ -145,13 +164,46 @@ const AcademicManagementPage = () => {
     fetchAllData();
   }, []);
 
+  // ==================== SAVE CLASS ORDER ====================
+  const handleSaveOrder = async () => {
+    setSavingOrder(true);
+    const ordersArray = Object.entries(editingOrders).map(([id, order]) => ({
+      id: parseInt(id),
+      order: parseInt(order),
+    }));
+    try {
+      const res = await fetch(`${API_BASE}/api/academic/classes/update-order`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ orders: ordersArray }),
+      });
+      if (res.ok) {
+        showModal('success', 'Order saved');
+        await fetchAllData();
+      } else {
+        const err = await res.json();
+        showModal('error', err.message || 'Failed');
+      }
+    } catch {
+      showModal('error', 'Network error');
+    } finally {
+      setSavingOrder(false);
+    }
+  };
+
   // ==================== CLASSES ====================
   const handleClassSubmit = async (e) => {
     e.preventDefault();
     setClassSaving(true);
     const form = e.target;
-    const body = { name: form.name.value };
-    const url = editingClass ? `${API_BASE}/api/academic/classes/${editingClass.id}` : `${API_BASE}/api/academic/classes`;
+    const body = {
+      name: form.name.value,
+      order: form.order.value || 0,
+      grading_type: form.grading_type.value,
+    };
+    const url = editingClass
+      ? `${API_BASE}/api/academic/classes/${editingClass.id}`
+      : `${API_BASE}/api/academic/classes`;
     const method = editingClass ? 'PUT' : 'POST';
     try {
       const res = await fetch(url, {
@@ -494,6 +546,112 @@ const AcademicManagementPage = () => {
     });
   };
 
+  // ==================== COMPETENCY HANDLERS ====================
+  const handleCompetencySubmit = async (e) => {
+    e.preventDefault();
+    setCompetencySaving(true);
+    const form = e.target;
+    const body = {
+      name: form.name.value,
+      description: form.description.value,
+      subject_id: form.subject_id.value || null,
+    };
+    const url = editingCompetency
+      ? `${API_BASE}/api/academic/competencies/${editingCompetency.id}`
+      : `${API_BASE}/api/academic/competencies`;
+    const method = editingCompetency ? 'PUT' : 'POST';
+    try {
+      const res = await fetch(url, {
+        method,
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify(body),
+      });
+      if (res.ok) {
+        await fetchAllData();
+        showModal('success', editingCompetency ? 'Competency updated' : 'Competency created');
+        setCompetencyModal(false);
+        setEditingCompetency(null);
+      } else {
+        const err = await res.json();
+        showModal('error', err.message || 'Failed');
+      }
+    } catch {
+      showModal('error', 'Network error');
+    } finally {
+      setCompetencySaving(false);
+    }
+  };
+
+  const handleDeleteCompetency = (id) => {
+    const comp = competencies.find(c => c.id === id);
+    confirmAction('Delete Competency', `Delete ${comp?.name}?`, async () => {
+      await fetch(`${API_BASE}/api/academic/competencies/${id}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      await fetchAllData();
+      showModal('success', 'Competency deleted');
+    });
+  };
+
+  // ==================== SKILL HANDLERS ====================
+  const handleOpenSkillModal = (competencyId, skill = null) => {
+    setSelectedCompetencyId(competencyId);
+    setEditingSkill(skill);
+    setSkillModal(true);
+  };
+
+  const handleSkillSubmit = async (e) => {
+    e.preventDefault();
+    setSkillSaving(true);
+    const form = e.target;
+    const body = {
+      competency_id: selectedCompetencyId,
+      name: form.name.value,
+      description: form.description.value || null,
+    };
+    const url = editingSkill
+      ? `${API_BASE}/api/academic/skills/${editingSkill.id}`
+      : `${API_BASE}/api/academic/skills`;
+    const method = editingSkill ? 'PUT' : 'POST';
+    try {
+      const res = await fetch(url, {
+        method,
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify(body),
+      });
+      if (res.ok) {
+        await fetchAllData();
+        showModal('success', editingSkill ? 'Skill updated' : 'Skill created');
+        setSkillModal(false);
+        setEditingSkill(null);
+      } else {
+        const err = await res.json();
+        showModal('error', err.message || 'Failed');
+      }
+    } catch {
+      showModal('error', 'Network error');
+    } finally {
+      setSkillSaving(false);
+    }
+  };
+
+  const handleDeleteSkill = (skillId) => {
+    const skill = competencies.flatMap(c => c.skills || []).find(s => s.id === skillId);
+    confirmAction('Delete Skill', `Delete ${skill?.name}?`, async () => {
+      await fetch(`${API_BASE}/api/academic/skills/${skillId}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      await fetchAllData();
+      showModal('success', 'Skill deleted');
+    });
+  };
+
+  const toggleCompetencyExpand = (id) => {
+    setExpandedCompetencies(prev => ({ ...prev, [id]: !prev[id] }));
+  };
+
   // ==================== FILTERS ====================
   const filteredClasses = classes.filter(c => c.name.toLowerCase().includes(searchClass.toLowerCase()));
   const filteredSubjects = subjects.filter(s => s.name.toLowerCase().includes(searchSubject.toLowerCase()));
@@ -504,6 +662,11 @@ const AcademicManagementPage = () => {
     a.subject_name.toLowerCase().includes(searchTeacherAssignment.toLowerCase()) ||
     a.class_name.toLowerCase().includes(searchTeacherAssignment.toLowerCase()) ||
     (a.stream_name && a.stream_name.toLowerCase().includes(searchTeacherAssignment.toLowerCase()))
+  );
+  const filteredCompetencies = competencies.filter(c =>
+    c.name.toLowerCase().includes(searchCompetency.toLowerCase()) ||
+    (c.description && c.description.toLowerCase().includes(searchCompetency.toLowerCase())) ||
+    (c.subject_name && c.subject_name.toLowerCase().includes(searchCompetency.toLowerCase()))
   );
 
   if (loading) {
@@ -536,7 +699,7 @@ const AcademicManagementPage = () => {
 
       {/* Tabs */}
       <div className="flex gap-4 mb-8 flex-wrap">
-        {['classes', 'streams', 'subjects', 'years', 'terms', 'teacher-subjects'].map(tab => (
+        {['classes', 'streams', 'subjects', 'competencies', 'years', 'terms', 'teacher-subjects'].map(tab => (
           <button
             key={tab}
             onClick={() => setActiveTab(tab)}
@@ -556,6 +719,10 @@ const AcademicManagementPage = () => {
             <button onClick={() => { setEditingClass(null); setClassModal(true); }} className="bg-blue-600 text-white px-4 py-2 rounded-lg flex items-center gap-2">
               <FaPlus /> Add Class
             </button>
+            <button onClick={handleSaveOrder} disabled={savingOrder} className="bg-green-600 text-white px-4 py-2 rounded-lg flex items-center gap-2 disabled:opacity-50">
+              {savingOrder ? <FaSpinner className="animate-spin" /> : <FaSave />}
+              {savingOrder ? 'Saving...' : 'Save Order'}
+            </button>
             <div className="relative flex-1 max-w-sm">
               <FaSearch className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
               <input type="text" placeholder="Search classes..." value={searchClass} onChange={e => setSearchClass(e.target.value)}
@@ -568,7 +735,24 @@ const AcademicManagementPage = () => {
               return (
                 <div key={cls.id} className="bg-white rounded-xl shadow p-6">
                   <div className="flex justify-between items-center mb-4">
-                    <h3 className="text-2xl font-semibold">{cls.name}</h3>
+                    <div className="flex items-center gap-4">
+                      <div>
+                        <label className="text-xs text-gray-500">Order</label>
+                        <input
+                          type="number"
+                          min="0"
+                          value={editingOrders[cls.id] ?? 0}
+                          onChange={e => setEditingOrders(prev => ({ ...prev, [cls.id]: e.target.value }))}
+                          className="w-16 p-1 border rounded text-center"
+                        />
+                      </div>
+                      <div>
+                        <h3 className="text-2xl font-semibold">{cls.name}</h3>
+                        <span className="ml-2 text-xs bg-gray-100 px-2 py-0.5 rounded-full">
+                          {cls.grading_type === 'skill' ? 'Skill‑Based' : 'Numeric'}
+                        </span>
+                      </div>
+                    </div>
                     <div className="flex gap-2">
                       <button onClick={() => openStreamManage(cls)} className="text-blue-600 text-sm underline"><FaStream className="inline mr-1" /> Assign Streams</button>
                       <button onClick={() => { setEditingClass(cls); setClassModal(true); }} className="text-blue-600"><FaEdit /></button>
@@ -672,7 +856,87 @@ const AcademicManagementPage = () => {
         </div>
       )}
 
-      {/* ==================== YEARS & TERMS ==================== */}
+      {/* ==================== COMPETENCIES & SKILLS TAB ==================== */}
+      {activeTab === 'competencies' && (
+        <div>
+          <div className="flex gap-4 mb-4 items-center">
+            <button
+              onClick={() => { setEditingCompetency(null); setCompetencyModal(true); }}
+              className="bg-blue-600 text-white px-4 py-2 rounded-lg flex items-center gap-2"
+            >
+              <FaPlus /> Add Competency
+            </button>
+            <div className="relative flex-1 max-w-sm">
+              <FaSearch className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+              <input
+                type="text"
+                placeholder="Search competencies..."
+                value={searchCompetency}
+                onChange={e => setSearchCompetency(e.target.value)}
+                className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg"
+              />
+            </div>
+          </div>
+
+          <div className="space-y-4">
+            {filteredCompetencies.map(comp => {
+              const isExpanded = expandedCompetencies[comp.id] || false;
+              const skills = comp.skills || [];
+              return (
+                <div key={comp.id} className="bg-white rounded-xl shadow p-6">
+                  <div className="flex justify-between items-center">
+                    <div className="flex items-center gap-4">
+                      <button onClick={() => toggleCompetencyExpand(comp.id)} className="text-blue-600">
+                        {isExpanded ? <FaChevronDown /> : <FaChevronRight />}
+                      </button>
+                      <div>
+                        <h3 className="text-lg font-semibold">{comp.name}</h3>
+                        <p className="text-sm text-gray-500">{comp.description || 'No description'}</p>
+                        <span className="text-xs bg-gray-200 px-2 py-0.5 rounded-full">{comp.subject_name || 'Global'}</span>
+                      </div>
+                    </div>
+                    <div className="flex gap-2">
+                      <button onClick={() => { setEditingCompetency(comp); setCompetencyModal(true); }} className="text-blue-600"><FaEdit /></button>
+                      <button onClick={() => handleDeleteCompetency(comp.id)} className="text-red-600"><FaTrash /></button>
+                    </div>
+                  </div>
+
+                  {isExpanded && (
+                    <div className="mt-4 ml-8 space-y-3">
+                      <div className="flex items-center gap-2 mb-2">
+                        <span className="font-medium text-gray-700">Skills:</span>
+                        <button
+                          onClick={() => handleOpenSkillModal(comp.id)}
+                          className="text-blue-600 text-sm hover:underline"
+                        >
+                          + Add Skill
+                        </button>
+                      </div>
+                      {skills.length === 0 && (
+                        <p className="text-gray-500 italic">No skills defined yet.</p>
+                      )}
+                      {skills.map(skill => (
+                        <div key={skill.id} className="flex items-center justify-between bg-blue-50 p-3 rounded-lg">
+                          <div>
+                            <div className="font-medium">{skill.name}</div>
+                            {skill.description && <div className="text-sm text-gray-500">{skill.description}</div>}
+                          </div>
+                          <div className="flex gap-2">
+                            <button onClick={() => handleOpenSkillModal(comp.id, skill)} className="text-blue-600"><FaEdit /></button>
+                            <button onClick={() => handleDeleteSkill(skill.id)} className="text-red-600"><FaTrash /></button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* ==================== YEARS TAB ==================== */}
       {activeTab === 'years' && (
         <div>
           <button onClick={() => { setEditingYear(null); setYearModal(true); }} className="mb-4 bg-blue-600 text-white px-4 py-2 rounded-lg flex items-center gap-2"><FaPlus /> Add Academic Year</button>
@@ -690,6 +954,7 @@ const AcademicManagementPage = () => {
         </div>
       )}
 
+      {/* ==================== TERMS TAB ==================== */}
       {activeTab === 'terms' && (
         <div>
           <div className="flex gap-4 mb-4 items-center">
@@ -756,6 +1021,14 @@ const AcademicManagementPage = () => {
             <h2 className="text-xl font-bold mb-4">{editingClass ? 'Edit Class' : 'Add Class'}</h2>
             <form onSubmit={handleClassSubmit}>
               <input name="name" defaultValue={editingClass?.name} required placeholder="Class Name" className="w-full p-2 border rounded mb-3" />
+              <input name="order" type="number" defaultValue={editingClass?.order ?? 0} placeholder="Order" className="w-full p-2 border rounded mb-3" />
+              <div className="mb-3">
+                <label className="block text-sm font-medium mb-1">Assessment Type</label>
+                <select name="grading_type" defaultValue={editingClass?.grading_type || 'numeric'} className="w-full p-2 border rounded">
+                  <option value="numeric">Numeric (Scores & Grades)</option>
+                  <option value="skill">Skill-Based (Achievements & Improvements)</option>
+                </select>
+              </div>
               <div className="flex gap-4">
                 <button type="submit" disabled={classSaving} className="bg-blue-600 text-white px-4 py-2 rounded-lg flex items-center gap-2 disabled:opacity-50">
                   {classSaving ? <FaSpinner className="animate-spin" /> : null}
@@ -795,11 +1068,16 @@ const AcademicManagementPage = () => {
             <div className="max-h-60 overflow-y-auto space-y-2 mb-4">
               {streams.map(stream => (
                 <label key={stream.id} className="flex items-center gap-2">
-                  <input type="checkbox" checked={streamManageModal.selectedStreams.includes(stream.id)}
+                  <input
+                    type="checkbox"
+                    checked={streamManageModal.selectedStreams.includes(stream.id)}
                     onChange={e => {
-                      const updated = e.target.checked ? [...streamManageModal.selectedStreams, stream.id] : streamManageModal.selectedStreams.filter(id => id !== stream.id);
+                      const updated = e.target.checked
+                        ? [...streamManageModal.selectedStreams, stream.id]
+                        : streamManageModal.selectedStreams.filter(id => id !== stream.id);
                       setStreamManageModal(prev => ({ ...prev, selectedStreams: updated }));
-                    }} />
+                    }}
+                  />
                   <span>{stream.name}</span>
                 </label>
               ))}
@@ -823,11 +1101,16 @@ const AcademicManagementPage = () => {
             <div className="max-h-60 overflow-y-auto space-y-2 mb-4">
               {teachers.map(t => (
                 <label key={t.id} className="flex items-center gap-2">
-                  <input type="checkbox" checked={teacherAssignModal.teachers.includes(t.id)}
+                  <input
+                    type="checkbox"
+                    checked={teacherAssignModal.teachers.includes(t.id)}
                     onChange={e => {
-                      const updated = e.target.checked ? [...teacherAssignModal.teachers, t.id] : teacherAssignModal.teachers.filter(id => id !== t.id);
+                      const updated = e.target.checked
+                        ? [...teacherAssignModal.teachers, t.id]
+                        : teacherAssignModal.teachers.filter(id => id !== t.id);
                       setTeacherAssignModal(prev => ({ ...prev, teachers: updated }));
-                    }} />
+                    }}
+                  />
                   <span>{t.first_name} {t.last_name}</span>
                 </label>
               ))}
@@ -843,7 +1126,7 @@ const AcademicManagementPage = () => {
         </div>
       )}
 
-      {/* Subject CRUD Modal */}
+      {/* Subject Modal */}
       {subjectModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-40">
           <div className="bg-white rounded-xl shadow-2xl max-w-md w-full p-6 animate-fade-in">
@@ -872,7 +1155,12 @@ const AcademicManagementPage = () => {
               <div className="max-h-60 overflow-y-auto space-y-2 mb-4">
                 {subjects.map(s => (
                   <label key={s.id} className="flex items-center gap-2">
-                    <input type="checkbox" name="subjects" value={s.id} defaultChecked={subjectAssignModal.subjects?.some(sub => sub.id === s.id)} />
+                    <input
+                      type="checkbox"
+                      name="subjects"
+                      value={s.id}
+                      defaultChecked={subjectAssignModal.subjects?.some(sub => sub.id === s.id)}
+                    />
                     <span>{s.name}</span>
                   </label>
                 ))}
@@ -981,6 +1269,58 @@ const AcademicManagementPage = () => {
                   {assignmentSaving ? 'Saving...' : 'Save'}
                 </button>
                 <button type="button" onClick={() => setTeacherSubjectModal(false)} className="border px-4 py-2 rounded-lg">Cancel</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Competency Modal */}
+      {competencyModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-40">
+          <div className="bg-white rounded-xl shadow-2xl max-w-md w-full p-6 animate-fade-in">
+            <h2 className="text-xl font-bold mb-4">
+              {editingCompetency ? 'Edit Competency' : 'Add Competency'}
+            </h2>
+            <form onSubmit={handleCompetencySubmit}>
+              <input name="name" defaultValue={editingCompetency?.name} required placeholder="Competency Name" className="w-full p-2 border rounded mb-3" />
+              <textarea name="description" defaultValue={editingCompetency?.description} placeholder="Description (optional)" className="w-full p-2 border rounded mb-3" rows="3" />
+              <div className="mb-3">
+                <label className="block text-sm font-medium mb-1">Linked Subject (optional)</label>
+                <select name="subject_id" defaultValue={editingCompetency?.subject_id || ''} className="w-full p-2 border rounded">
+                  <option value="">None (Global)</option>
+                  {subjects.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                </select>
+              </div>
+              <div className="flex gap-4">
+                <button type="submit" disabled={competencySaving} className="bg-blue-600 text-white px-4 py-2 rounded-lg flex items-center gap-2 disabled:opacity-50">
+                  {competencySaving ? <FaSpinner className="animate-spin" /> : null}
+                  {competencySaving ? 'Saving...' : 'Save'}
+                </button>
+                <button type="button" onClick={() => setCompetencyModal(false)} className="border px-4 py-2 rounded-lg">Cancel</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Skill Modal */}
+      {skillModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-40">
+          <div className="bg-white rounded-xl shadow-2xl max-w-md w-full p-6 animate-fade-in">
+            <h2 className="text-xl font-bold mb-4">
+              {editingSkill ? 'Edit Skill' : 'Add Skill'}
+            </h2>
+            <form onSubmit={handleSkillSubmit}>
+              <input name="name" defaultValue={editingSkill?.name} required placeholder="Skill Name" className="w-full p-2 border rounded mb-3" />
+              <textarea name="description" defaultValue={editingSkill?.description} placeholder="Description (optional)" className="w-full p-2 border rounded mb-3" rows="3" />
+              <input type="hidden" name="competency_id" value={selectedCompetencyId} />
+              <div className="flex gap-4">
+                <button type="submit" disabled={skillSaving} className="bg-blue-600 text-white px-4 py-2 rounded-lg flex items-center gap-2 disabled:opacity-50">
+                  {skillSaving ? <FaSpinner className="animate-spin" /> : null}
+                  {skillSaving ? 'Saving...' : 'Save'}
+                </button>
+                <button type="button" onClick={() => setSkillModal(false)} className="border px-4 py-2 rounded-lg">Cancel</button>
               </div>
             </form>
           </div>
