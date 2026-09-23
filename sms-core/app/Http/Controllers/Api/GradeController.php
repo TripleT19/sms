@@ -23,6 +23,7 @@ use App\Models\User;
 use App\Models\PublishedReport;
 use App\Models\StudentFee;
 use App\Traits\LogsActivity;
+use App\Notifications\ResultsPublished;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
@@ -241,10 +242,14 @@ class GradeController extends Controller
 
         $assessmentType = $request->assessment_type ?? 'end_term';
 
+        // Determine which submission timestamp column to check
+        $timestampColumn = $assessmentType === 'mid_term' ? 'submitted_mid_term_at' : 'submitted_end_term_at';
+
+        // Lock check per assessment type
         $submittedCount = StudentComment::where('class_id', $request->class_id)
             ->where('term_id', $request->term_id)
             ->when($request->stream_id, fn($q) => $q->where('stream_id', $request->stream_id))
-            ->whereNotNull('submitted_at')
+            ->whereNotNull($timestampColumn)
             ->count();
 
         $totalStudents = Student::where('class_id', $request->class_id)
@@ -252,7 +257,7 @@ class GradeController extends Controller
             ->count();
 
         if ($totalStudents > 0 && $submittedCount === $totalStudents) {
-            return response()->json(['message' => 'Grades are locked because the report has been submitted.'], 423);
+            return response()->json(['message' => 'Grades are locked because this assessment type has been submitted.'], 423);
         }
 
         $user  = $request->user();
@@ -532,13 +537,15 @@ class GradeController extends Controller
     public function comments(Request $request)
     {
         $request->validate([
-            'class_id'  => 'required|exists:classes,id',
-            'stream_id' => 'nullable|exists:streams,id',
-            'term_id'   => 'required|exists:terms,id',
+            'class_id'        => 'required|exists:classes,id',
+            'stream_id'       => 'nullable|exists:streams,id',
+            'term_id'         => 'required|exists:terms,id',
+            'assessment_type' => 'nullable|in:mid_term,end_term',
         ]);
 
         $user    = $request->user();
         $isAdmin = $user->roles()->where('name', 'Admin')->exists();
+        $assessmentType = $request->assessment_type ?? 'end_term';
 
         $studentsQuery = Student::where('class_id', $request->class_id);
 
@@ -555,7 +562,7 @@ class GradeController extends Controller
 
         $students = $studentsQuery->get(['id', 'first_name', 'last_name', 'student_number', 'gender']);
 
-        $assessmentType = 'end_term';
+        // Grades for the requested assessment type
         $grades = Grade::whereIn('student_id', $students->pluck('id'))
             ->where('term_id', $request->term_id)
             ->where('class_id', $request->class_id)
@@ -589,13 +596,17 @@ class GradeController extends Controller
             ->get()
             ->keyBy('student_id');
 
-        $data = $students->map(function ($student) use ($grades, $attendance, $weekdays, $existingComments) {
+        $timestampColumn = $assessmentType === 'mid_term' ? 'submitted_mid_term_at' : 'submitted_end_term_at';
+
+        $data = $students->map(function ($student) use ($grades, $attendance, $weekdays, $existingComments, $timestampColumn) {
             $studentGrades = $grades->get($student->id, collect());
             $avgScore      = $studentGrades->avg('score');
             $presentDays   = $attendance->get($student->id, collect())->count();
             $attendancePct = $weekdays > 0 ? round(($presentDays / $weekdays) * 100, 1) : 0;
 
             $comment = $existingComments->get($student->id);
+            $isSubmitted = $comment && $comment->{$timestampColumn} ? true : false;
+
             return [
                 'student_id'       => $student->id,
                 'first_name'       => $student->first_name,
@@ -607,7 +618,7 @@ class GradeController extends Controller
                 'attendance_pct'   => $attendancePct,
                 'comment'          => $comment->comment ?? '',
                 'include_attendance' => $comment->include_attendance ?? false,
-                'submitted'        => $comment && $comment->submitted_at ? true : false,
+                'submitted'        => $isSubmitted,
                 'published'        => $comment && $comment->published_at ? true : false,
             ];
         });
@@ -689,12 +700,16 @@ class GradeController extends Controller
         return response()->json(['message' => "{$saved} comment(s) saved."]);
     }
 
+    /**
+     * Submit comments for a specific assessment type.
+     */
     public function submitComments(Request $request)
     {
         $request->validate([
-            'class_id'  => 'required|exists:classes,id',
-            'stream_id' => 'nullable|exists:streams,id',
-            'term_id'   => 'required|exists:terms,id',
+            'class_id'        => 'required|exists:classes,id',
+            'stream_id'       => 'nullable|exists:streams,id',
+            'term_id'         => 'required|exists:terms,id',
+            'assessment_type' => 'required|in:mid_term,end_term',
         ]);
 
         $class = ClassRoom::findOrFail($request->class_id);
@@ -702,22 +717,34 @@ class GradeController extends Controller
             ->when($request->stream_id, fn($q) => $q->where('stream_id', $request->stream_id))
             ->get(['id', 'stream_id']);
 
+        $assessmentType = $request->assessment_type;
+        $timestampColumn = $assessmentType === 'mid_term' ? 'submitted_mid_term_at' : 'submitted_end_term_at';
+
+        // Prevent mid‑term submission if end‑term is already submitted
+        if ($assessmentType === 'mid_term') {
+            $endTermSubmitted = StudentComment::where('class_id', $request->class_id)
+                ->where('term_id', $request->term_id)
+                ->when($request->stream_id, fn($q) => $q->where('stream_id', $request->stream_id))
+                ->whereNotNull('submitted_end_term_at')
+                ->exists();
+            if ($endTermSubmitted) {
+                return response()->json(['message' => 'Mid‑term cannot be submitted after end‑term has been submitted.'], 422);
+            }
+        }
+
         foreach ($students as $student) {
             StudentComment::updateOrCreate(
-                [
-                    'student_id' => $student->id,
-                    'term_id'    => $request->term_id,
-                ],
+                ['student_id' => $student->id, 'term_id' => $request->term_id],
                 [
                     'class_id'   => $request->class_id,
-                    'stream_id'  => $student->stream_id,   // always use the student's stream
-                    'submitted_at' => now(),
+                    'stream_id'  => $student->stream_id,   // always store the student's actual stream
+                    $timestampColumn => now(),
                     'entered_by' => $request->user()->id,
                 ]
             );
         }
 
-        // Notify admins
+        // Notify admins (unchanged)
         $adminRole = Role::where('name', 'Admin')->first();
         if ($adminRole) {
             $adminIds = User::whereHas('roles', fn($q) => $q->where('roles.id', $adminRole->id))->pluck('id');
@@ -746,66 +773,63 @@ class GradeController extends Controller
         return response()->json(['message' => 'Comments submitted to admin.']);
     }
 
+    /**
+     * Check if all students have submitted for a given assessment type.
+     */
+    public function submissionStatus(Request $request)
+    {
+        $request->validate([
+            'class_id'        => 'required|exists:classes,id',
+            'stream_id'       => 'nullable|exists:streams,id',
+            'term_id'         => 'required|exists:terms,id',
+            'assessment_type' => 'required|in:mid_term,end_term',
+        ]);
+
+        $timestampColumn = $request->assessment_type === 'mid_term' ? 'submitted_mid_term_at' : 'submitted_end_term_at';
+
+        $totalStudents = Student::where('class_id', $request->class_id)
+            ->when($request->stream_id, fn($q) => $q->where('stream_id', $request->stream_id))
+            ->count();
+
+        $submittedCount = StudentComment::where('class_id', $request->class_id)
+            ->where('term_id', $request->term_id)
+            ->when($request->stream_id, fn($q) => $q->where('stream_id', $request->stream_id))
+            ->whereNotNull($timestampColumn)
+            ->count();
+
+        return response()->json(['all_submitted' => $totalStudents > 0 && $submittedCount === $totalStudents]);
+    }
+
     // -------------------------------------------------
     // PUBLISH & PROMOTE (includes snapshots for both types)
     // -------------------------------------------------
     public function publishComments(Request $request)
     {
         $request->validate([
-            'class_id'  => 'required|exists:classes,id',
-            'stream_id' => 'nullable|exists:streams,id',
-            'term_id'   => 'required|exists:terms,id',
+            'class_id'        => 'required|exists:classes,id',
+            'stream_id'       => 'nullable|exists:streams,id',
+            'term_id'         => 'required|exists:terms,id',
             'assessment_type' => 'nullable|in:mid_term,end_term',
         ]);
 
         $assessmentType = $request->assessment_type ?? 'end_term';
+        $classId        = $request->class_id;
+        $streamId       = $request->stream_id;
+        $termId         = $request->term_id;
 
-        StudentComment::where('class_id', $request->class_id)
-            ->where('term_id', $request->term_id)
-            ->when($request->stream_id, fn($q) => $q->where('stream_id', $request->stream_id))
+        // Mark comments as published
+        StudentComment::where('class_id', $classId)
+            ->where('term_id', $termId)
+            ->when($streamId, fn($q) => $q->where('stream_id', $streamId))
             ->whereNotNull('submitted_at')
             ->whereNull('published_at')
             ->update(['published_at' => now()]);
 
-        $this->createPublishedSnapshots($request->class_id, $request->stream_id, $request->term_id, $assessmentType);
+        // Create published snapshots
+        $this->createPublishedSnapshots($classId, $streamId, $termId, $assessmentType);
 
-        $studentIds = Student::where('class_id', $request->class_id)
-            ->when($request->stream_id, fn($q) => $q->where('stream_id', $request->stream_id))
-            ->pluck('id');
-
-        $parentIds = Guardian::whereHas('students', fn($q) => $q->whereIn('students.id', $studentIds))
-            ->whereNotNull('user_id')
-            ->pluck('user_id')
-            ->unique();
-
-        if ($parentIds->isNotEmpty()) {
-            $class = ClassRoom::find($request->class_id);
-            $term  = Term::find($request->term_id);
-            $streamName = $request->stream_id ? Stream::find($request->stream_id)->name : '';
-            $message = "Report cards published for {$class->name}";
-            if ($streamName) $message .= " ({$streamName})";
-            $message .= " - {$term->name}";
-
-            if ($this->isFinalTerm($request->term_id)) {
-                $termModel = Term::find($request->term_id);
-                if ($termModel->next_opening_date) {
-                    $message .= ". Next opening: " . Carbon::parse($termModel->next_opening_date)->format('d M Y');
-                }
-            }
-
-            $insertData = [];
-            $now = now();
-            foreach ($parentIds as $uid) {
-                $insertData[] = [
-                    'user_id'    => $uid,
-                    'type'       => 'publication',
-                    'message'    => $message,
-                    'created_at' => $now,
-                    'updated_at' => $now,
-                ];
-            }
-            Notification::insert($insertData);
-        }
+        // Notify parents
+        $this->notifyParentsAboutPublication($classId, $streamId, $termId, $assessmentType);
 
         return response()->json(['message' => 'Comments published.']);
     }
@@ -821,13 +845,14 @@ class GradeController extends Controller
             'next_opening_date' => 'nullable|date',
         ]);
 
-        $termId         = $request->term_id;
-        $classId        = $request->class_id;
-        $streamId       = $request->stream_id;
-        $assessmentType = $request->assessment_type ?? 'end_term';
-        $threshold      = $request->threshold ?? 50;
-        $nextOpeningDate = $request->next_opening_date;
+        $termId           = $request->term_id;
+        $classId          = $request->class_id;
+        $streamId         = $request->stream_id;
+        $assessmentType   = $request->assessment_type ?? 'end_term';
+        $threshold        = $request->threshold ?? 50;
+        $nextOpeningDate  = $request->next_opening_date;
 
+        // Publish comments
         StudentComment::where('class_id', $classId)
             ->where('term_id', $termId)
             ->when($streamId, fn($q) => $q->where('stream_id', $streamId))
@@ -835,13 +860,20 @@ class GradeController extends Controller
             ->whereNull('published_at')
             ->update(['published_at' => now()]);
 
+        // Save next opening date if provided
         if ($nextOpeningDate) {
             Term::where('id', $termId)->update(['next_opening_date' => $nextOpeningDate]);
         }
 
+        // Create snapshots
         $this->createPublishedSnapshots($classId, $streamId, $termId, $assessmentType);
 
+        $class  = ClassRoom::find($classId);
+        $stream = $streamId ? Stream::find($streamId) : null;
+        $term   = Term::find($termId);
+
         if ($this->isFinalTerm($termId) && $assessmentType === 'end_term') {
+            // Promotion block
             $currentClass = ClassRoom::find($classId);
             $nextClass    = ClassRoom::where('order', '>', $currentClass->order)->orderBy('order')->first();
 
@@ -867,39 +899,102 @@ class GradeController extends Controller
                 $this->notifyParentsAboutPromotion($promotedIds, $nextClass?->id, $nextOpeningDate);
             }
         } else {
-            $studentIds = Student::where('class_id', $classId)
-                ->when($streamId, fn($q) => $q->where('stream_id', $streamId))
-                ->pluck('id');
-
-            $parentIds = Guardian::whereHas('students', fn($q) => $q->whereIn('students.id', $studentIds))
-                ->whereNotNull('user_id')
-                ->pluck('user_id')
-                ->unique();
-
-            if ($parentIds->isNotEmpty()) {
-                $class = ClassRoom::find($classId);
-                $term  = Term::find($termId);
-                $streamName = $streamId ? Stream::find($streamId)->name : '';
-                $message = "Report cards published for {$class->name}";
-                if ($streamName) $message .= " ({$streamName})";
-                $message .= " - {$term->name}";
-
-                $insertData = [];
-                $now = now();
-                foreach ($parentIds as $uid) {
-                    $insertData[] = [
-                        'user_id'    => $uid,
-                        'type'       => 'publication',
-                        'message'    => $message,
-                        'created_at' => $now,
-                        'updated_at' => $now,
-                    ];
-                }
-                Notification::insert($insertData);
-            }
+            // No promotion – notify parents about publication
+            $this->notifyParentsAboutPublication($classId, $streamId, $termId, $assessmentType);
         }
 
         return response()->json(['message' => 'Published successfully.']);
+    }
+
+    /**
+     * Send in-app and email notifications to all parents of published students.
+     * Ensures emails are sent even if only the Guardian record holds the email address.
+     */
+    private function notifyParentsAboutPublication($classId, $streamId, $termId, $assessmentType)
+    {
+        $class = ClassRoom::find($classId);
+        $term  = Term::find($termId);
+        $streamName = $streamId ? Stream::find($streamId)->name : '';
+
+        // 1. Get all student IDs for this class/stream
+        $studentIds = Student::where('class_id', $classId)
+            ->when($streamId, fn($q) => $q->where('stream_id', $streamId))
+            ->pluck('id');
+
+        if ($studentIds->isEmpty()) {
+            Log::warning("No students found for class {$classId}, term {$termId}");
+            return;
+        }
+
+        // 2. Get all guardians linked to these students (with user_id)
+        $guardians = Guardian::whereHas('students', fn($q) => $q->whereIn('students.id', $studentIds))
+            ->whereNotNull('user_id')
+            ->get(['user_id', 'email']);
+
+        if ($guardians->isEmpty()) {
+            Log::warning("No guardians with user_id found for students in class {$classId}");
+            return;
+        }
+
+        // 3. Build a map of user_id => best available email (prefer User email, fallback to Guardian email)
+        $userIds = $guardians->pluck('user_id')->unique();
+        $users = User::whereIn('id', $userIds)->get()->keyBy('id');
+
+        $parentIdsWithEmail = [];
+        foreach ($guardians as $guardian) {
+            $userId = $guardian->user_id;
+            $user = $users->get($userId);
+            if (!$user) continue;
+
+            // Use the User's email if present; otherwise, use the Guardian's email
+            $email = $user->email ?: $guardian->email;
+            if (empty($email)) continue;
+
+            // Temporarily set the email on the User model for the notification
+            $user->email = $email;
+            $parentIdsWithEmail[$userId] = $user; // use user_id as key to avoid duplicates
+        }
+
+        $parents = collect($parentIdsWithEmail)->values();
+        Log::info("Publishing results for {$class->name}, found {$parents->count()} parents with email.");
+
+        if ($parents->isEmpty()) return;
+
+        // 4. Create in-app notifications
+        $message = "Report cards published for {$class->name}";
+        if ($streamName) $message .= " ({$streamName})";
+        $message .= " - {$term->name}";
+
+        if ($this->isFinalTerm($termId)) {
+            $termModel = Term::find($termId);
+            if ($termModel->next_opening_date) {
+                $message .= ". Next opening: " . Carbon::parse($termModel->next_opening_date)->format('d M Y');
+            }
+        }
+
+        $insertData = [];
+        $now = now();
+        foreach ($parents as $user) {
+            $insertData[] = [
+                'user_id'    => $user->id,
+                'type'       => 'publication',
+                'message'    => $message,
+                'created_at' => $now,
+                'updated_at' => $now,
+            ];
+        }
+        Notification::insert($insertData);
+
+        // 5. Send email notifications
+        try {
+            \Illuminate\Support\Facades\Notification::sendNow(
+                $parents,
+                new ResultsPublished($class, $term, $assessmentType)
+            );
+            Log::info("Successfully dispatched results published emails to {$parents->count()} parents.");
+        } catch (\Exception $e) {
+            Log::error("Failed to send results published emails: " . $e->getMessage());
+        }
     }
 
     private function createPublishedSnapshots($classId, $streamId, $termId, $assessmentType = 'end_term')
@@ -1108,51 +1203,82 @@ class GradeController extends Controller
         ]);
     }
 
-    public function submissionStatus(Request $request)
-    {
-        $request->validate([
-            'class_id'  => 'required|exists:classes,id',
-            'stream_id' => 'nullable|exists:streams,id',
-            'term_id'   => 'required|exists:terms,id',
-        ]);
+    // public function submissionStatus(Request $request)
+    // {
+    //     $request->validate([
+    //         'class_id'        => 'required|exists:classes,id',
+    //         'stream_id'       => 'nullable|exists:streams,id',
+    //         'term_id'         => 'required|exists:terms,id',
+    //         'assessment_type' => 'required|in:mid_term,end_term',
+    //     ]);
 
-        $submittedCount = StudentComment::where('class_id', $request->class_id)
-            ->where('term_id', $request->term_id)
-            ->when($request->stream_id, fn($q) => $q->where('stream_id', $request->stream_id))
-            ->whereNotNull('submitted_at')->count();
+    //     $timestampColumn = $request->assessment_type === 'mid_term' ? 'submitted_mid_term_at' : 'submitted_end_term_at';
 
-        $totalStudents = Student::where('class_id', $request->class_id)
-            ->when($request->stream_id, fn($q) => $q->where('stream_id', $request->stream_id))
-            ->count();
+    //     $submittedCount = StudentComment::where('class_id', $request->class_id)
+    //         ->where('term_id', $request->term_id)
+    //         ->when($request->stream_id, fn($q) => $q->where('stream_id', $request->stream_id))
+    //         ->whereNotNull($timestampColumn)
+    //         ->count();
 
-        return response()->json(['all_submitted' => $totalStudents > 0 && $submittedCount === $totalStudents]);
-    }
+    //     $totalStudents = Student::where('class_id', $request->class_id)
+    //         ->when($request->stream_id, fn($q) => $q->where('stream_id', $request->stream_id))
+    //         ->count();
+
+    //     return response()->json(['all_submitted' => $totalStudents > 0 && $submittedCount === $totalStudents]);
+    // }
     
     public function submissionsList(Request $request)
     {
-        $request->validate(['term_id' => 'required|exists:terms,id']);
-        $termId  = $request->term_id;
+        $request->validate([
+            'term_id'         => 'required|exists:terms,id',
+            'assessment_type' => 'nullable|in:mid_term,end_term',
+        ]);
+
+        $termId         = $request->term_id;
+        $assessmentType = $request->assessment_type ?? 'end_term';
+        $timestampCol   = $assessmentType === 'mid_term' ? 'submitted_mid_term_at' : 'submitted_end_term_at';
+
         $classes = ClassRoom::with('streams')->get();
         $result  = [];
 
         foreach ($classes as $class) {
             $streams = $class->streams;
 
-            // Total students in the class (all streams)
-            $totalAll = Student::where('class_id', $class->id)->count();
-            // Total submitted comments for this class+term (ignore stream)
-            $submittedAll = StudentComment::where('class_id', $class->id)
-                ->where('term_id', $termId)
-                ->whereNotNull('submitted_at')
-                ->count();
-            // Is any of them published?
-            $publishedAll = StudentComment::where('class_id', $class->id)
-                ->where('term_id', $termId)
-                ->whereNotNull('published_at')
-                ->exists();
+            if ($streams->isEmpty()) {
+                // No streams – single entry for the whole class
+                $total = Student::where('class_id', $class->id)->count();
+                $submitted = StudentComment::where('class_id', $class->id)
+                    ->where('term_id', $termId)
+                    ->whereNotNull($timestampCol)
+                    ->count();
+                $published = StudentComment::where('class_id', $class->id)
+                    ->where('term_id', $termId)
+                    ->whereNotNull('published_at')
+                    ->exists();
 
-            if ($totalAll > 0 && $submittedAll === $totalAll && !$publishedAll) {
-                if ($streams->isEmpty()) {
+                if ($total > 0 && $submitted === $total && !$published) {
+                    $result[] = [
+                        'class_id'        => $class->id,
+                        'class_name'      => $class->name,
+                        'stream_id'       => null,
+                        'stream_name'     => null,
+                        'total_students'  => $total,
+                        'submitted_count' => $submitted,
+                    ];
+                }
+            } else {
+                // Add a whole‑class entry (all streams combined)
+                $totalAll     = Student::where('class_id', $class->id)->count();
+                $submittedAll = StudentComment::where('class_id', $class->id)
+                    ->where('term_id', $termId)
+                    ->whereNotNull($timestampCol)
+                    ->count();
+                $publishedAll = StudentComment::where('class_id', $class->id)
+                    ->where('term_id', $termId)
+                    ->whereNotNull('published_at')
+                    ->exists();
+
+                if ($totalAll > 0 && $submittedAll === $totalAll && !$publishedAll) {
                     $result[] = [
                         'class_id'        => $class->id,
                         'class_name'      => $class->name,
@@ -1161,44 +1287,33 @@ class GradeController extends Controller
                         'total_students'  => $totalAll,
                         'submitted_count' => $submittedAll,
                     ];
-                } else {
-                    // Class has streams – we still add a single entry for the whole class.
-                    // The admin can see all students are submitted and publish regardless of streams.
-                    $result[] = [
-                        'class_id'        => $class->id,
-                        'class_name'      => $class->name,
-                        'stream_id'       => null,
-                        'stream_name'     => null,
-                        'total_students'  => $totalAll,
-                        'submitted_count' => $submittedAll,
-                    ];
+                }
 
-                    // Optionally, also add per‑stream entries if they match individually.
-                    foreach ($streams as $stream) {
-                        $total = Student::where('class_id', $class->id)
-                            ->where('stream_id', $stream->id)
-                            ->count();
-                        $submitted = StudentComment::where('class_id', $class->id)
-                            ->where('stream_id', $stream->id)
-                            ->where('term_id', $termId)
-                            ->whereNotNull('submitted_at')
-                            ->count();
-                        $published = StudentComment::where('class_id', $class->id)
-                            ->where('stream_id', $stream->id)
-                            ->where('term_id', $termId)
-                            ->whereNotNull('published_at')
-                            ->exists();
+                // Also add per‑stream entries
+                foreach ($streams as $stream) {
+                    $total = Student::where('class_id', $class->id)
+                        ->where('stream_id', $stream->id)
+                        ->count();
+                    $submitted = StudentComment::where('class_id', $class->id)
+                        ->where('stream_id', $stream->id)
+                        ->where('term_id', $termId)
+                        ->whereNotNull($timestampCol)
+                        ->count();
+                    $published = StudentComment::where('class_id', $class->id)
+                        ->where('stream_id', $stream->id)
+                        ->where('term_id', $termId)
+                        ->whereNotNull('published_at')
+                        ->exists();
 
-                        if ($total > 0 && $submitted === $total && !$published) {
-                            $result[] = [
-                                'class_id'        => $class->id,
-                                'class_name'      => $class->name,
-                                'stream_id'       => $stream->id,
-                                'stream_name'     => $stream->name,
-                                'total_students'  => $total,
-                                'submitted_count' => $submitted,
-                            ];
-                        }
+                    if ($total > 0 && $submitted === $total && !$published) {
+                        $result[] = [
+                            'class_id'        => $class->id,
+                            'class_name'      => $class->name,
+                            'stream_id'       => $stream->id,
+                            'stream_name'     => $stream->name,
+                            'total_students'  => $total,
+                            'submitted_count' => $submitted,
+                        ];
                     }
                 }
             }

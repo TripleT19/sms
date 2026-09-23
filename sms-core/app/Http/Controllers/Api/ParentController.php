@@ -16,6 +16,7 @@ use App\Models\StudentFee;
 use App\Models\Term;
 use Barryvdh\DomPDF\Facade\Pdf;
 use Illuminate\Http\Request;
+use Carbon\Carbon;
 
 class ParentController extends Controller
 {
@@ -139,6 +140,8 @@ class ParentController extends Controller
                             ->with('subject:id,name')->get();
 
                         $avg = $grades->avg('score');
+                        $avgRounded = round($avg, 1);
+
                         $gradesData = $grades->map(fn($g) => [
                             'subject' => $g->subject->name,
                             'score'   => $g->score,
@@ -146,16 +149,19 @@ class ParentController extends Controller
                             'remarks' => $g->remarks,
                         ]);
 
+                        // --- Class position (fixed) ---
                         $classStudents = Student::where('class_id', $classId)->pluck('id');
                         $allAverages = Grade::whereIn('student_id', $classStudents)
                             ->where('term_id', $termId)
                             ->get()
                             ->groupBy('student_id')
-                            ->map(fn($gs) => $gs->avg('score'))
+                            ->map(fn($gs) => round($gs->avg('score'), 1))
                             ->sortDesc();
-                        $position = $allAverages->search($avg) + 1;
-                        $totalInClass = $allAverages->count();
 
+                        $classTotal = $allAverages->count();
+                        $position = $allAverages->filter(fn($a) => $a > $avgRounded)->count() + 1;
+
+                        // --- Stream position (fixed) ---
                         $streamPosition = null;
                         if ($streamId) {
                             $streamStudentIds = Student::where('stream_id', $streamId)->pluck('id');
@@ -163,9 +169,9 @@ class ParentController extends Controller
                                 ->where('term_id', $termId)
                                 ->get()
                                 ->groupBy('student_id')
-                                ->map(fn($gs) => $gs->avg('score'))
+                                ->map(fn($gs) => round($gs->avg('score'), 1))
                                 ->sortDesc();
-                            $streamPosition = $streamAverages->search($avg) + 1;
+                            $streamPosition = $streamAverages->filter(fn($a) => $a > $avgRounded)->count() + 1;
                         }
 
                         $comment = StudentComment::where('student_id', $student->id)
@@ -173,9 +179,9 @@ class ParentController extends Controller
 
                         $child['no_grades']       = false;
                         $child['grades']          = $gradesData;
-                        $child['average']         = $avg ? round($avg, 1) : null;
+                        $child['average']         = $avgRounded;
                         $child['position']        = $position;
-                        $child['total_in_class']  = $totalInClass;
+                        $child['total_in_class']  = $classTotal;
                         $child['stream_position'] = $streamPosition;
                         $child['comment']         = $comment ? $comment->comment : null;
                         $child['class_name']      = $class->name;
@@ -199,6 +205,272 @@ class ParentController extends Controller
             'children'     => $children,
             'bank_details' => BankDetail::all(),
         ]);
+    }
+
+    /**
+     * Return all terms for which a child has a published report or grades.
+     */
+    public function getStudentTerms(Request $request, $studentId)
+    {
+        $user = $request->user();
+
+        // Verify guardian relationship
+        $isGuardian = Guardian::where('user_id', $user->id)
+            ->whereHas('students', fn($q) => $q->where('students.id', $studentId))
+            ->exists();
+
+        if (!$isGuardian) {
+            return response()->json(['message' => 'Access denied'], 403);
+        }
+
+        $student = Student::with('class')->findOrFail($studentId);
+        $class = $student->class;
+
+        // Collect terms that have either a published report or at least one grade
+        $publishedTermIds = PublishedReport::where('student_id', $studentId)
+            ->pluck('term_id')
+            ->unique();
+
+        $gradeTermIds = Grade::where('student_id', $studentId)
+            ->pluck('term_id')
+            ->unique();
+
+        $termIds = $publishedTermIds->merge($gradeTermIds)->unique();
+
+        if ($termIds->isEmpty()) {
+            return response()->json([]);
+        }
+
+        $terms = Term::whereIn('id', $termIds)
+            ->orderByDesc('end_date')
+            ->get();
+
+        $data = [];
+        foreach ($terms as $term) {
+            // Try published report first (prefer end_term if both exist)
+            $report = PublishedReport::where('student_id', $studentId)
+                ->where('term_id', $term->id)
+                ->orderByDesc('assessment_type') // end_term comes before mid_term
+                ->first();
+
+            if ($report) {
+                $data[] = [
+                    'term_id'        => $term->id,
+                    'term_name'      => $term->name,
+                    'academic_year'  => $term->academicYear ? $term->academicYear->name : '',
+                    'assessment_type'=> $report->assessment_type,
+                    'average'        => $report->average,
+                    'class_position' => $report->class_position,
+                    'stream_position'=> $report->stream_position,
+                    'grading_type'   => $class->grading_type ?? 'numeric',
+                ];
+            } else {
+                // Fallback to dynamic grades
+                $grades = Grade::where('student_id', $studentId)
+                    ->where('term_id', $term->id)
+                    ->get();
+
+                if ($grades->isEmpty()) continue;
+
+                $avg = $grades->avg('score');
+                $avgRounded = round($avg, 1);
+
+                // Class position (fixed)
+                $classStudents = Student::where('class_id', $class->id)->pluck('id');
+                $allAverages = Grade::whereIn('student_id', $classStudents)
+                    ->where('term_id', $term->id)
+                    ->get()
+                    ->groupBy('student_id')
+                    ->map(fn($gs) => round($gs->avg('score'), 1))
+                    ->sortDesc();
+                $classTotal = $allAverages->count();
+                $position = $allAverages->filter(fn($a) => $a > $avgRounded)->count() + 1;
+
+                // Stream position (fixed)
+                $streamPosition = null;
+                if ($student->stream_id) {
+                    $streamStudentIds = Student::where('stream_id', $student->stream_id)->pluck('id');
+                    $streamAverages = Grade::whereIn('student_id', $streamStudentIds)
+                        ->where('term_id', $term->id)
+                        ->get()
+                        ->groupBy('student_id')
+                        ->map(fn($gs) => round($gs->avg('score'), 1))
+                        ->sortDesc();
+                    $streamPosition = $streamAverages->filter(fn($a) => $a > $avgRounded)->count() + 1;
+                }
+
+                $data[] = [
+                    'term_id'        => $term->id,
+                    'term_name'      => $term->name,
+                    'academic_year'  => $term->academicYear ? $term->academicYear->name : '',
+                    'assessment_type'=> 'end_term',  // default
+                    'average'        => $avgRounded,
+                    'class_position' => $position,
+                    'stream_position'=> $streamPosition,
+                    'grading_type'   => $class->grading_type ?? 'numeric',
+                ];
+            }
+        }
+
+        return response()->json($data);
+    }
+
+    /**
+     * Return the full report for a student in a given term.
+     */
+    public function getStudentReport(Request $request, $studentId, $termId)
+    {
+        $user = $request->user();
+
+        // Verify guardian relationship
+        $isGuardian = Guardian::where('user_id', $user->id)
+            ->whereHas('students', fn($q) => $q->where('students.id', $studentId))
+            ->exists();
+
+        if (!$isGuardian) {
+            return response()->json(['message' => 'Access denied'], 403);
+        }
+
+        $student = Student::with('class', 'stream')->findOrFail($studentId);
+        $class  = $student->class;
+        $stream = $student->stream;
+        $term   = Term::findOrFail($termId);
+        $academicYear = $term->academicYear ? $term->academicYear->name : '';
+
+        // Assessment type (use end_term by default, mid_term if explicitly requested)
+        $assessmentType = $request->assessment_type ?? 'end_term';
+
+        // Try published report
+        $report = PublishedReport::where('student_id', $studentId)
+            ->where('term_id', $termId)
+            ->where('assessment_type', $assessmentType)
+            ->first();
+
+        // If no exact match, try any assessment type for this term
+        if (!$report) {
+            $report = PublishedReport::where('student_id', $studentId)
+                ->where('term_id', $termId)
+                ->first();
+        }
+
+        // Fee balance for the term
+        $totalFees = StudentFee::where('student_id', $studentId)
+            ->where('term_id', $termId)
+            ->sum('total_amount');
+        $paidFees = StudentFee::where('student_id', $studentId)
+            ->where('term_id', $termId)
+            ->sum('paid_amount');
+        $feesBalance = $totalFees - $paidFees;
+        $resultsWithheld = $feesBalance > 0;
+
+        if ($report) {
+            // Use published snapshot data
+            $reportAssessmentType = $report->assessment_type;
+            $child = [
+                'student_id'       => $student->id,
+                'name'             => $student->first_name . ' ' . $student->last_name,
+                'student_number'   => $student->student_number,
+                'class_name'       => $class->name,
+                'stream_name'      => $stream ? $stream->name : null,
+                'term_name'        => $term->name,
+                'academic_year'    => $academicYear,
+                'assessment_type'  => $reportAssessmentType,
+                'grading_type'     => $class->grading_type ?? 'numeric',
+                'average'          => $report->average,
+                'class_position'   => $report->class_position,
+                'class_total'      => $report->class_total,
+                'stream_position'  => $report->stream_position,
+                'grades'           => $report->grades,
+                'comment'          => $report->comment,
+                'fees_balance'     => $feesBalance,
+                'results_withheld' => $resultsWithheld,
+                'promotion'        => null,
+            ];
+
+            if ($this->isFinalTerm($termId) && $reportAssessmentType === 'end_term') {
+                $child['promotion'] = $this->getPromotionInfo($student, $class, $report);
+            }
+
+            return response()->json($child);
+        }
+
+        // No published report – build dynamic numeric fallback
+        $grades = Grade::where('student_id', $studentId)
+            ->where('term_id', $termId)
+            ->with('subject:id,name')
+            ->get();
+
+        if ($grades->isEmpty()) {
+            return response()->json(['message' => 'No grades found for this term.'], 404);
+        }
+
+        $avg = $grades->avg('score');
+        $avgRounded = round($avg, 1);
+
+        $gradesData = $grades->map(fn($g) => [
+            'subject' => $g->subject->name,
+            'score'   => $g->score,
+            'grade'   => $g->grade,
+            'remarks' => $g->remarks,
+        ]);
+
+        // Class position (fixed)
+        $classStudents = Student::where('class_id', $class->id)->pluck('id');
+        $allAverages = Grade::whereIn('student_id', $classStudents)
+            ->where('term_id', $termId)
+            ->get()
+            ->groupBy('student_id')
+            ->map(fn($gs) => round($gs->avg('score'), 1))
+            ->sortDesc();
+        $classTotal = $allAverages->count();
+        $classPosition = $allAverages->filter(fn($a) => $a > $avgRounded)->count() + 1;
+
+        // Stream position (fixed)
+        $streamPosition = null;
+        if ($student->stream_id) {
+            $streamStudentIds = Student::where('stream_id', $student->stream_id)->pluck('id');
+            $streamAverages = Grade::whereIn('student_id', $streamStudentIds)
+                ->where('term_id', $termId)
+                ->get()
+                ->groupBy('student_id')
+                ->map(fn($gs) => round($gs->avg('score'), 1))
+                ->sortDesc();
+            $streamPosition = $streamAverages->filter(fn($a) => $a > $avgRounded)->count() + 1;
+        }
+
+        $comment = StudentComment::where('student_id', $studentId)
+            ->where('term_id', $termId)->first();
+
+        $child = [
+            'student_id'       => $student->id,
+            'name'             => $student->first_name . ' ' . $student->last_name,
+            'student_number'   => $student->student_number,
+            'class_name'       => $class->name,
+            'stream_name'      => $stream ? $stream->name : null,
+            'term_name'        => $term->name,
+            'academic_year'    => $academicYear,
+            'assessment_type'  => 'end_term',
+            'grading_type'     => $class->grading_type ?? 'numeric',
+            'average'          => $avgRounded,
+            'class_position'   => $classPosition,
+            'class_total'      => $classTotal,
+            'stream_position'  => $streamPosition,
+            'grades'           => $gradesData,
+            'comment'          => $comment ? $comment->comment : null,
+            'fees_balance'     => $feesBalance,
+            'results_withheld' => $resultsWithheld,
+            'promotion'        => null,
+        ];
+
+        if ($this->isFinalTerm($termId)) {
+            $nextClass = ClassRoom::where('order', '>', $class->order)
+                ->orderBy('order')->first();
+            $child['promotion'] = $nextClass
+                ? ['promoted' => $avg >= 50, 'next_class' => $nextClass->name, 'next_opening_date' => $term->next_opening_date]
+                : ['promoted' => $avg >= 50, 'graduating' => true, 'next_opening_date' => $term->next_opening_date];
+        }
+
+        return response()->json($child);
     }
 
     /**
@@ -342,7 +614,7 @@ class ParentController extends Controller
             'next_class'        => $nextClass ? $nextClass->name : null,
             'graduating'        => $graduating,
             'next_opening_date' => $nextOpeningDate
-                ? \Carbon\Carbon::parse($nextOpeningDate)->format('d M Y')
+                ? Carbon::parse($nextOpeningDate)->format('d M Y')
                 : null,
         ];
     }

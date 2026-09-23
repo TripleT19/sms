@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { FaBullhorn, FaSpinner, FaCalendarAlt, FaUsers } from 'react-icons/fa';
 import Modal from './Modal';
 
-const API_BASE = 'https://sturdy-spoon-x5qpgx9gq67j297x-8000.app.github.dev';
+const API_BASE = 'https://laravel.moyorise.com';
 
 const AnnouncementsPage = () => {
   const token = localStorage.getItem('auth_token');

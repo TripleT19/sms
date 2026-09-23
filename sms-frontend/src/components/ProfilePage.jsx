@@ -9,7 +9,7 @@ import {
 } from 'react-icons/fa';
 import Modal from './Modal';  // adjust path if needed
 
-const API_BASE = 'https://sturdy-spoon-x5qpgx9gq67j297x-8000.app.github.dev';
+const API_BASE = 'https://laravel.moyorise.com';
 
 const ProfilePage = () => {
   const navigate = useNavigate();

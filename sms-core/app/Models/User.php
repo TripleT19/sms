@@ -15,7 +15,7 @@ class User extends Authenticatable
         'first_name',
         'last_name',
         'salutation',
-        'name',          // keep for backward compatibility
+        'name',          
         'username',
         'email',
         'phone',

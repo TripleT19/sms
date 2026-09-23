@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { FaBell, FaCheck, FaSpinner, FaCheckDouble, FaCalendarAlt, FaUsers, FaChevronDown, FaChevronUp } from 'react-icons/fa';
 
-const API_BASE = 'https://sturdy-spoon-x5qpgx9gq67j297x-8000.app.github.dev';
+const API_BASE = 'https://laravel.moyorise.com';
 
 const NotificationsPage = () => {
   const token = localStorage.getItem('auth_token');

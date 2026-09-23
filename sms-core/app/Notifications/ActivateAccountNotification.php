@@ -2,6 +2,7 @@
 
 namespace App\Notifications;
 
+use App\Models\SchoolInformation;
 use Illuminate\Bus\Queueable;
 use Illuminate\Notifications\Messages\MailMessage;
 use Illuminate\Notifications\Notification;
@@ -24,6 +25,9 @@ class ActivateAccountNotification extends Notification
 
     public function toMail($notifiable)
     {
+        $school   = SchoolInformation::first();
+        $appName  = $school->school_name ?? config('app.name', 'School Management System');
+
         $salutation = $notifiable->salutation ?? '';
         $firstName  = $notifiable->first_name ?? $notifiable->name ?? '';
         $greeting   = 'Dear';
@@ -37,12 +41,12 @@ class ActivateAccountNotification extends Notification
         $resetUrl = $frontendUrl . '?token=' . $this->token . '&email=' . urlencode($notifiable->email);
 
         return (new MailMessage)
-            ->subject('Activate Your Account – ' . config('app.name'))
+            ->subject('Activate Your Account – ' . $appName)
             ->greeting($greeting . ',')
-            ->line('An account has been created for you on the ' . config('app.name') . ' platform.')
+            ->line('An account has been created for you on the ' . $appName . ' platform.')
             ->line('Click the button below to set your password and activate your account:')
             ->action('Set Your Password', $resetUrl)
             ->line('This link will expire in ' . config('auth.passwords.users.expire') . ' minutes.')
-            ->salutation('Warm regards,<br>' . config('app.name') . ' Team');
+            ->salutation('Warm regards,<br>' . $appName . ' Team');
     }
 }

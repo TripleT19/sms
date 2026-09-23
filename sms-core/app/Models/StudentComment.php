@@ -8,7 +8,8 @@ class StudentComment extends Model
 {
     protected $fillable = [
         'student_id', 'term_id', 'class_id', 'stream_id',
-        'comment', 'include_attendance', 'submitted_at', 'published_at', 'entered_by',
+        'comment', 'include_attendance', 'submitted_at', 'published_at', 'entered_by', 'submitted_mid_term_at',
+        'submitted_end_term_at',  
     ];
 
     protected $casts = [

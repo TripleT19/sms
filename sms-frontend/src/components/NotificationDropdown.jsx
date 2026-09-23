@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { FaBell, FaCheck, FaSpinner, FaTimes, FaCalendarAlt, FaUsers } from 'react-icons/fa';
 
-const API_BASE = 'https://sturdy-spoon-x5qpgx9gq67j297x-8000.app.github.dev';
+const API_BASE = 'https://laravel.moyorise.com';
 
 const NotificationDropdown = ({ unreadCount, setUnreadCount }) => {
   const token = localStorage.getItem('auth_token');

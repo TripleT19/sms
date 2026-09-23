@@ -3,7 +3,7 @@ import React, { useState, useMemo } from 'react';
 import { useSearchParams, useNavigate } from 'react-router-dom';
 import { FaLock, FaSpinner, FaCheckCircle, FaTimesCircle } from 'react-icons/fa';
 
-const API_BASE = 'https://sturdy-spoon-x5qpgx9gq67j297x-8000.app.github.dev';
+const API_BASE = 'https://laravel.moyorise.com';
 
 // Password strength calculator
 const calculateStrength = (pwd) => {

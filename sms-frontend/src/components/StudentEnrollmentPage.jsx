@@ -5,7 +5,7 @@ import {
 } from 'react-icons/fa';
 import Modal from './Modal';
 
-const API_BASE = 'https://sturdy-spoon-x5qpgx9gq67j297x-8000.app.github.dev';
+const API_BASE = 'https://laravel.moyorise.com';
 
 const RELATIONSHIPS = ['Mother', 'Father', 'Guardian', 'Aunt', 'Uncle', 'Sibling', 'Other'];
 const ENROLLMENT_STATUSES = ['Active', 'Graduated', 'Transferred', 'Suspended', 'Withdrawn'];

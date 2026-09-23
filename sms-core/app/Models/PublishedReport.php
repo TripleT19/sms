@@ -14,8 +14,10 @@ class PublishedReport extends Model
     ];
 
     protected $casts = [
-        'grades'           => 'array',
+        'grades'           => 'array',  
+        'skills'           => 'array',  
         'results_withheld' => 'boolean',
+        'fees_balance'     => 'float',
     ];
 
     public function student()

@@ -3,7 +3,7 @@ import {
   FaCheckCircle, FaSpinner, FaTimes,
 } from 'react-icons/fa';
 
-const API_BASE = 'https://sturdy-spoon-x5qpgx9gq67j297x-8000.app.github.dev';
+const API_BASE = 'https://laravel.moyorise.com';
 
 const PublishGradesPage = () => {
   const token = localStorage.getItem('auth_token');
@@ -15,12 +15,12 @@ const PublishGradesPage = () => {
   const [bulkPublishing, setBulkPublishing] = useState(false);
   const [message, setMessage] = useState({ type: '', text: '' });
 
+  // Assessment type for publishing (and for fetching submissions)
+  const [assessmentType, setAssessmentType] = useState('end_term');
+
   // Selection
   const [selectedIds, setSelectedIds] = useState(new Set());
   const [selectAll, setSelectAll] = useState(false);
-
-  // Assessment type for publishing
-  const [assessmentType, setAssessmentType] = useState('end_term');
 
   // Promotion modal
   const [promotionModal, setPromotionModal] = useState({
@@ -66,14 +66,14 @@ const PublishGradesPage = () => {
     fetchTerms();
   }, [token]);
 
-  // Fetch submissions
+  // Fetch submissions – now sends assessment_type
   useEffect(() => {
     if (!selectedTermId) return;
     const fetchSubmissions = async () => {
       setLoading(true);
       try {
         const res = await fetch(
-          `${API_BASE}/api/grades/submissions-list?term_id=${selectedTermId}`,
+          `${API_BASE}/api/grades/submissions-list?term_id=${selectedTermId}&assessment_type=${assessmentType}`,
           { headers: { Authorization: `Bearer ${token}` } }
         );
         if (res.ok) {
@@ -89,7 +89,7 @@ const PublishGradesPage = () => {
       }
     };
     fetchSubmissions();
-  }, [selectedTermId, token]);
+  }, [selectedTermId, assessmentType, token]);
 
   // ======================== SINGLE / BULK PUBLISH ========================
 
@@ -384,7 +384,7 @@ const PublishGradesPage = () => {
         </table>
       </div>
 
-      {/* ==================== PROMOTION MODAL ==================== */}
+      {/* ==================== PROMOTION MODAL (unchanged) ==================== */}
       {promotionModal.open && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-40">
           <div className="bg-white rounded-xl shadow-2xl max-w-lg w-full p-6 animate-fade-in max-h-[90vh] overflow-y-auto">

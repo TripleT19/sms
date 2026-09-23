@@ -16,6 +16,10 @@ use App\Http\Controllers\Api\SchoolInformationController;
 use App\Http\Controllers\Api\NotificationController;
 use App\Http\Controllers\Api\ParentController;
 use App\Http\Controllers\Api\MessageController;
+use App\Http\Controllers\Api\AdminReportController;
+use App\Http\Controllers\Api\StatisticsController;
+use App\Http\Controllers\Api\LogController;
+ 
 
 /*
 |--------------------------------------------------------------------------
@@ -62,6 +66,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/users/search', [UserManagementController::class, 'search']);
     Route::apiResource('users', UserManagementController::class)->except(['show']);
     Route::post('/users/{user}/reset-password', [UserManagementController::class, 'resetPassword']);
+    Route::post('/admin/reports/download', [AdminReportController::class, 'downloadBulk']);
 
     // Teacher / Attendance
     Route::get('/teacher/assignments', [AttendanceController::class, 'teacherAssignments']);
@@ -212,6 +217,8 @@ Route::middleware('auth:sanctum')->group(function () {
     // Parent Portal
     Route::get('/parent/children', [ParentController::class, 'children']);
     Route::get('/parent/report-card/{studentId}', [ParentController::class, 'downloadReportCard']);
+    Route::get('/parent/child/{studentId}/terms', [ParentController::class, 'getStudentTerms']);
+    Route::get('/parent/child/{studentId}/report/{termId}', [ParentController::class, 'getStudentReport']);
 
     // Messages
     Route::get('/messages/conversations', [MessageController::class, 'index']);
@@ -223,4 +230,10 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/messages/recipients', [MessageController::class, 'recipients']);
     Route::post('/messages/forward', [MessageController::class, 'forward']);
     Route::get('/messages/unread-count', [MessageController::class, 'unreadCount']);
+
+    //dashboard data
+    Route::get('/logs/recent', [LogController::class, 'recent']);
+    Route::get('/statistics/performance', [StatisticsController::class, 'performance']);
+    Route::get('/statistics/finance', [StatisticsController::class, 'financeSummary']);
+    Route::get('/admin/stats', [StatisticsController::class, 'adminStats']);
 });

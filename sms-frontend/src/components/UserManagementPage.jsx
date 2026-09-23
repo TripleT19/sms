@@ -7,10 +7,12 @@ import {
   FaKey,
   FaSave,
   FaTimes,
+  FaSync,
+  FaSearch,
 } from 'react-icons/fa';
 import Modal from './Modal';
 
-const API_BASE = 'https://sturdy-spoon-x5qpgx9gq67j297x-8000.app.github.dev';
+const API_BASE = 'https://laravel.moyorise.com';
 
 const UserManagementPage = () => {
   const token = localStorage.getItem('auth_token');
@@ -40,32 +42,41 @@ const UserManagementPage = () => {
   // Confirmation modal (delete / reset)
   const [confirm, setConfirm] = useState({ isOpen: false, title: '', message: '', action: null });
 
-  useEffect(() => {
-    const fetchData = async () => {
-      try {
-        const [usersRes, rolesRes] = await Promise.all([
-          fetch(`${API_BASE}/api/users`, {
-            headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
-          }),
-          fetch(`${API_BASE}/api/roles`, {
-            headers: { Accept: 'application/json' },
-          }),
-        ]);
+  // Tabs, search, sort, filter
+  const [activeTab, setActiveTab] = useState('staff');   // 'staff' | 'parents'
+  const [searchTerm, setSearchTerm] = useState('');
+  const [sortBy, setSortBy] = useState('name');
+  const [filterRole, setFilterRole] = useState('');       // '' means all roles
 
-        if (usersRes.ok) {
-          const usersData = await usersRes.json();
-          setUsers(usersData.users);
-        }
-        if (rolesRes.ok) {
-          const rolesData = await rolesRes.json();
-          setAllRoles(rolesData.roles);
-        }
-      } catch (err) {
-        showModal('error', 'Failed to load data.');
-      } finally {
-        setLoadingUsers(false);
+  // Fetch users + roles
+  const fetchData = async () => {
+    setLoadingUsers(true);
+    try {
+      const [usersRes, rolesRes] = await Promise.all([
+        fetch(`${API_BASE}/api/users`, {
+          headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
+        }),
+        fetch(`${API_BASE}/api/roles`, {
+          headers: { Accept: 'application/json' },
+        }),
+      ]);
+
+      if (usersRes.ok) {
+        const usersData = await usersRes.json();
+        setUsers(usersData.users);
       }
-    };
+      if (rolesRes.ok) {
+        const rolesData = await rolesRes.json();
+        setAllRoles(rolesData.roles);
+      }
+    } catch (err) {
+      showModal('error', 'Failed to load data.');
+    } finally {
+      setLoadingUsers(false);
+    }
+  };
+
+  useEffect(() => {
     fetchData();
   }, [token]);
 
@@ -88,7 +99,6 @@ const UserManagementPage = () => {
   };
 
   const openEdit = (user) => {
-    // Map role names back to IDs
     const roleIds = user.roles
       .map(roleName => allRoles.find(r => r.name === roleName)?.id)
       .filter(Boolean);
@@ -103,7 +113,6 @@ const UserManagementPage = () => {
     });
     setEditing(true);
 
-    // Scroll to the form smoothly
     if (formRef.current) {
       formRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
@@ -140,11 +149,8 @@ const UserManagementPage = () => {
       const data = await res.json();
       if (res.ok) {
         showModal('success', editing ? 'User updated!' : 'User created! Activation email sent.');
-        if (editing) {
-          setUsers(prev => prev.map(u => (u.id === form.id ? data.user : u)));
-        } else {
-          setUsers(prev => [...prev, data.user]);
-        }
+        // Refresh the user list
+        await fetchData();
         resetForm();
       } else {
         showModal('error', data.message || 'Operation failed.');
@@ -177,7 +183,7 @@ const UserManagementPage = () => {
             headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
           });
           if (res.ok) {
-            setUsers(prev => prev.filter(u => u.id !== user.id));
+            await fetchData();
             showModal('success', 'User deleted.');
           } else {
             const data = await res.json();
@@ -213,16 +219,56 @@ const UserManagementPage = () => {
     );
   };
 
-  if (loadingUsers) {
-    return <div className="p-6"><p className="text-gray-600">Loading users...</p></div>;
+  // Derived data: separate staff vs parents
+  const parents = users.filter(u => u.roles.length === 1 && u.roles.includes('Parent'));
+  const staff = users.filter(u => !(u.roles.length === 1 && u.roles.includes('Parent')));
+
+  const currentList = activeTab === 'staff' ? staff : parents;
+
+  // Apply search, filter, sort
+  let filteredList = [...currentList];
+
+  // Search
+  if (searchTerm.trim()) {
+    const term = searchTerm.toLowerCase();
+    filteredList = filteredList.filter(u =>
+      (u.first_name + ' ' + u.last_name).toLowerCase().includes(term) ||
+      (u.email || '').toLowerCase().includes(term)
+    );
   }
+
+  // Filter by role
+  if (filterRole) {
+    filteredList = filteredList.filter(u => u.roles.includes(filterRole));
+  }
+
+  // Sort
+  filteredList.sort((a, b) => {
+    let valA, valB;
+    switch (sortBy) {
+      case 'name':
+        valA = (a.first_name + ' ' + a.last_name).toLowerCase();
+        valB = (b.first_name + ' ' + b.last_name).toLowerCase();
+        break;
+      case 'email':
+        valA = (a.email || '').toLowerCase();
+        valB = (b.email || '').toLowerCase();
+        break;
+      case 'highest_role':
+        valA = a.highest_role || '';
+        valB = b.highest_role || '';
+        break;
+      default:
+        return 0;
+    }
+    return valA.localeCompare(valB);
+  });
 
   return (
     <div className="p-6 bg-blue-50 min-h-screen">
-      {/* Success/Error Modal */}
+      {/* Modals */}
       <Modal isOpen={modal.isOpen} type={modal.type} message={modal.message} onClose={closeModal} />
 
-      {/* Confirmation Modal */}
       {confirm.isOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-40">
           <div className="bg-white rounded-xl shadow-2xl max-w-md w-full p-6 relative animate-fade-in">
@@ -240,9 +286,9 @@ const UserManagementPage = () => {
         </div>
       )}
 
-      <h1 className="text-3xl font-bold text-blue-900 mb-8">User Management</h1>
+      <h1 className="text-3xl font-bold text-blue-900 mb-6">User Management</h1>
 
-      {/* Inline Add / Edit Form (scroll target) */}
+      {/* Inline Add / Edit Form */}
       <div ref={formRef} className="bg-white p-6 rounded-xl shadow mb-8">
         <h2 className="text-xl font-semibold mb-4 flex items-center gap-2">
           {editing ? <><FaEdit /> Edit User</> : <><FaUserPlus /> Add New User</>}
@@ -274,7 +320,6 @@ const UserManagementPage = () => {
             </div>
           </div>
 
-          {/* Roles */}
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-2">Assign Roles *</label>
             <div className="flex flex-wrap gap-2">
@@ -321,52 +366,134 @@ const UserManagementPage = () => {
         </form>
       </div>
 
-      {/* Users List */}
-      <div className="bg-white rounded-xl shadow overflow-x-auto">
-        <h2 className="text-xl font-semibold p-6">Existing Users</h2>
-        <table className="w-full text-left">
-          <thead className="bg-blue-50">
-            <tr>
-              <th className="p-4">Name</th>
-              <th className="p-4">Email</th>
-              <th className="p-4">Roles</th>
-              <th className="p-4">Highest Role</th>
-              <th className="p-4">Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {users.map(user => (
-              <tr key={user.id} className="border-t hover:bg-gray-50">
-                <td className="p-4">
-                  {user.salutation && `${user.salutation} `}
-                  {user.first_name} {user.last_name}
-                </td>
-                <td className="p-4">{user.email}</td>
-                <td className="p-4">
-                  {Array.isArray(user.roles) ? user.roles.join(', ') : 'No roles'}
-                </td>
-                <td className="p-4">
-                  <span className="bg-blue-100 text-blue-800 text-sm px-2 py-1 rounded-full">
-                    {user.highest_role || 'None'}
-                  </span>
-                </td>
-                <td className="p-4">
-                  <div className="flex items-center gap-2">
-                    <button onClick={() => openEdit(user)} className="text-blue-600 hover:text-blue-800 transition" title="Edit">
-                      <FaEdit />
-                    </button>
-                    <button onClick={() => handleResetPassword(user)} className="text-yellow-600 hover:text-yellow-800 transition" title="Reset Password">
-                      <FaKey />
-                    </button>
-                    <button onClick={() => handleDelete(user)} className="text-red-600 hover:text-red-800 transition" title="Delete">
-                      <FaTrash />
-                    </button>
-                  </div>
-                </td>
-              </tr>
+      {/* Tabs + Controls */}
+      <div className="bg-white rounded-xl shadow p-4 mb-4">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-4">
+          {/* Tabs */}
+          <div className="flex gap-2">
+            <button
+              onClick={() => setActiveTab('staff')}
+              className={`px-5 py-2 rounded-full font-medium transition ${
+                activeTab === 'staff'
+                  ? 'bg-blue-600 text-white'
+                  : 'bg-white text-blue-600 border border-blue-600 hover:bg-blue-50'
+              }`}
+            >
+              Staff
+            </button>
+            <button
+              onClick={() => setActiveTab('parents')}
+              className={`px-5 py-2 rounded-full font-medium transition ${
+                activeTab === 'parents'
+                  ? 'bg-blue-600 text-white'
+                  : 'bg-white text-blue-600 border border-blue-600 hover:bg-blue-50'
+              }`}
+            >
+              Parents
+            </button>
+          </div>
+
+          {/* Refresh */}
+          <button
+            onClick={fetchData}
+            disabled={loadingUsers}
+            className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition disabled:opacity-50"
+          >
+            {loadingUsers ? <FaSpinner className="animate-spin" /> : <FaSync />}
+            Refresh
+          </button>
+        </div>
+
+        {/* Search, Sort, Filter */}
+        <div className="flex flex-col sm:flex-row gap-4">
+          <div className="relative flex-1 max-w-sm">
+            <FaSearch className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+            <input
+              type="text"
+              placeholder="Search by name or email..."
+              value={searchTerm}
+              onChange={e => setSearchTerm(e.target.value)}
+              className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg"
+            />
+          </div>
+          <select
+            value={sortBy}
+            onChange={e => setSortBy(e.target.value)}
+            className="p-2 border border-gray-300 rounded-lg"
+          >
+            <option value="name">Sort by Name</option>
+            <option value="email">Sort by Email</option>
+            <option value="highest_role">Sort by Highest Role</option>
+          </select>
+          <select
+            value={filterRole}
+            onChange={e => setFilterRole(e.target.value)}
+            className="p-2 border border-gray-300 rounded-lg"
+          >
+            <option value="">All Roles</option>
+            {allRoles.map(role => (
+              <option key={role.id} value={role.name}>{role.name}</option>
             ))}
-          </tbody>
-        </table>
+          </select>
+        </div>
+      </div>
+
+      {/* Users Table */}
+      <div className="bg-white rounded-xl shadow overflow-x-auto">
+        <h2 className="text-xl font-semibold p-6">
+          {activeTab === 'staff' ? 'Staff' : 'Parents'} ({filteredList.length})
+        </h2>
+        {loadingUsers ? (
+          <div className="flex justify-center py-10">
+            <FaSpinner className="animate-spin text-2xl text-blue-600" />
+          </div>
+        ) : filteredList.length === 0 ? (
+          <p className="text-gray-500 p-6">No users found.</p>
+        ) : (
+          <table className="w-full text-left">
+            <thead className="bg-blue-50">
+              <tr>
+                <th className="p-4">Name</th>
+                <th className="p-4">Email</th>
+                <th className="p-4">Roles</th>
+                <th className="p-4">Highest Role</th>
+                <th className="p-4">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filteredList.map(user => (
+                <tr key={user.id} className="border-t hover:bg-gray-50">
+                  <td className="p-4">
+                    {user.salutation && `${user.salutation} `}
+                    {user.first_name} {user.last_name}
+                  </td>
+                  <td className="p-4">{user.email}</td>
+                  <td className="p-4">
+                    {Array.isArray(user.roles) ? user.roles.join(', ') : 'No roles'}
+                  </td>
+                  <td className="p-4">
+                    <span className="bg-blue-100 text-blue-800 text-sm px-2 py-1 rounded-full">
+                      {user.highest_role || 'None'}
+                    </span>
+                  </td>
+                  <td className="p-4">
+                    <div className="flex items-center gap-2">
+                      <button onClick={() => openEdit(user)} className="text-blue-600 hover:text-blue-800 transition" title="Edit">
+                        <FaEdit />
+                      </button>
+                      <button onClick={() => handleResetPassword(user)} className="text-yellow-600 hover:text-yellow-800 transition" title="Reset Password">
+                        <FaKey />
+                      </button>
+                      <button onClick={() => handleDelete(user)} className="text-red-600 hover:text-red-800 transition" title="Delete">
+                        <FaTrash />
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
       </div>
     </div>
   );

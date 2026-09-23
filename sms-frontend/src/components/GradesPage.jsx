@@ -1,11 +1,11 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import {
   FaSave, FaSpinner, FaPaperPlane, FaLock,
   FaDownload, FaUpload, FaMagic, FaUserCheck,
 } from 'react-icons/fa';
 import Modal from './Modal';
 
-const API_BASE = 'https://sturdy-spoon-x5qpgx9gq67j297x-8000.app.github.dev';
+const API_BASE = 'https://laravel.moyorise.com';
 
 // ========================
 // Numeric Grading helpers (unchanged)
@@ -163,9 +163,6 @@ const RATINGS = [
   { value: 'B',  label: 'Beginning' },
 ];
 
-// --------------------------------
-// Skill‑based comment helpers
-// --------------------------------
 const calculateAverageRating = (skills) => {
   const weights = { EE: 4, A: 3, D: 2, B: 1 };
   let total = 0;
@@ -307,7 +304,7 @@ const GradesPage = () => {
   // Grading type
   const [gradingType, setGradingType] = useState('numeric');
 
-  // Assessment type (only numeric)
+  // Assessment type
   const [assessmentType, setAssessmentType] = useState('end_term');
 
   // Numeric grades state
@@ -331,7 +328,7 @@ const GradesPage = () => {
 
   // Grading completeness & submission lock
   const [allGraded, setAllGraded] = useState(false);
-  const [isLocked, setIsLocked] = useState(false);
+  const [isLockedForType, setIsLockedForType] = useState(false);
 
   // Download / upload
   const [downloading, setDownloading] = useState(false);
@@ -423,20 +420,31 @@ const GradesPage = () => {
   const checkSubmissionStatus = async () => {
     if (!selectedClass || !selectedTerm) return;
     try {
-      const params = new URLSearchParams({ class_id: selectedClass, term_id: selectedTerm });
+      const params = new URLSearchParams({
+        class_id: selectedClass,
+        term_id: selectedTerm,
+        assessment_type: assessmentType,
+      });
       if (selectedStream) params.append('stream_id', selectedStream);
-      const res = await fetch(`${API_BASE}/api/grades/submission-status?${params}`, { headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' } });
-      if (res.ok) setIsLocked((await res.json()).all_submitted);
+      const res = await fetch(`${API_BASE}/api/grades/submission-status?${params}`, {
+        headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
+      });
+      if (res.ok) setIsLockedForType((await res.json()).all_submitted);
     } catch (err) { console.error(err); }
   };
 
   useEffect(() => {
-    if (selectedClass && selectedTerm) { checkGradingStatus(); checkSubmissionStatus(); }
-    else { setAllGraded(false); setIsLocked(false); }
-  }, [selectedClass, selectedStream, selectedTerm, activeTab, assessmentType, gradingType]);
+    if (selectedClass && selectedTerm) {
+      checkGradingStatus();
+      checkSubmissionStatus();
+    } else {
+      setAllGraded(false);
+      setIsLockedForType(false);
+    }
+  }, [selectedClass, selectedStream, selectedTerm, assessmentType, gradingType]);
 
   // ---------- LOAD NUMERIC STUDENTS & GRADES ----------
-  const loadStudentsAndGrades = async () => {
+  const loadStudentsAndGrades = useCallback(async () => {
     if (!selectedClass || !selectedSubject || !selectedTerm) return;
     try {
       const params = new URLSearchParams({
@@ -464,11 +472,16 @@ const GradesPage = () => {
         setGradesData(map);
       }
     } catch (err) { showModal('error', 'Failed to load students'); }
-  };
+  }, [selectedClass, selectedStream, selectedSubject, selectedTerm, assessmentType, token]);
 
   useEffect(() => {
-    if (gradingType === 'numeric') loadStudentsAndGrades();
-  }, [selectedClass, selectedStream, selectedSubject, selectedTerm, assessmentType, gradingType]);
+    // Reset immediately when assessment type changes
+    setStudents([]);
+    setGradesData({});
+    if (gradingType === 'numeric') {
+      loadStudentsAndGrades();
+    }
+  }, [loadStudentsAndGrades, gradingType]);
 
   // ---------- LOAD SKILL DATA ----------
   const loadSkillData = async () => {
@@ -493,21 +506,19 @@ const GradesPage = () => {
     if (gradingType === 'skill') loadSkillData();
   }, [selectedClass, selectedStream, selectedTerm, gradingType]);
 
-  // Load skill data when comments tab opens for skill classes (needed for auto‑generation)
   useEffect(() => {
     if (activeTab === 'comments' && gradingType === 'skill' && selectedClass && selectedTerm) {
       loadSkillData();
     }
   }, [activeTab, gradingType, selectedClass, selectedTerm, selectedStream]);
 
-  // ---------- SELECTED STUDENT DATA ----------
   const selectedStudentData = skillStudents.find(s => s.student_id === selectedSkillStudentId) || null;
 
   // ====================
   // NUMERIC GRADES ACTIONS
   // ====================
   const handleScoreChange = (studentId, value) => {
-    if (isLocked) return;
+    if (isLockedForType) return;
     const computed = computeGradeAndRemarks(value);
     setGradesData(prev => ({
       ...prev,
@@ -521,7 +532,7 @@ const GradesPage = () => {
   };
 
   const handleSaveGrades = async () => {
-    if (isLocked) return;
+    if (isLockedForType) return;
     const hasAnyScore = students.some(
       s => gradesData[s.student_id]?.score !== null && gradesData[s.student_id]?.score !== ''
     );
@@ -564,7 +575,7 @@ const GradesPage = () => {
   // SKILL RATING CHANGE
   // ====================
   const handleSkillRatingChange = (skillId, value) => {
-    if (isLocked || !selectedStudentData) return;
+    if (isLockedForType || !selectedStudentData) return;
     setSkillStudents(prev =>
       prev.map(student => {
         if (student.student_id !== selectedSkillStudentId) return student;
@@ -581,7 +592,7 @@ const GradesPage = () => {
   };
 
   const handleSkillCommentChange = (skillId, comment) => {
-    if (isLocked || !selectedStudentData) return;
+    if (isLockedForType || !selectedStudentData) return;
     setSkillStudents(prev =>
       prev.map(student => {
         if (student.student_id !== selectedSkillStudentId) return student;
@@ -598,7 +609,7 @@ const GradesPage = () => {
   };
 
   const handleSaveSkills = async () => {
-    if (isLocked) return;
+    if (isLockedForType) return;
     setSavingSkills(true);
     const assessments = [];
     skillStudents.forEach(student => {
@@ -631,7 +642,7 @@ const GradesPage = () => {
         showModal('success', 'Skills saved');
         await loadSkillData();
         checkSubmissionStatus();
-        checkGradingStatus(); // unlock comments if now graded
+        checkGradingStatus();
       } else {
         const err = await res.json();
         showModal('error', err.message || 'Failed');
@@ -659,7 +670,7 @@ const GradesPage = () => {
   };
 
   const handleUpload = async (e) => {
-    if (isLocked) return;
+    if (isLockedForType) return;
     const file = e.target.files[0];
     if (!file) return;
     if (!selectedClass || !selectedTerm) { showModal('error', 'Please select class and term'); return; }
@@ -680,9 +691,15 @@ const GradesPage = () => {
     if (!selectedClass || !selectedTerm) return;
     setLoadingComments(true);
     try {
-      const params = new URLSearchParams({ class_id: selectedClass, term_id: selectedTerm });
+      const params = new URLSearchParams({
+        class_id: selectedClass,
+        term_id: selectedTerm,
+        assessment_type: assessmentType,
+      });
       if (selectedStream) params.append('stream_id', selectedStream);
-      const res = await fetch(`${API_BASE}/api/grades/comments?${params}`, { headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' } });
+      const res = await fetch(`${API_BASE}/api/grades/comments?${params}`, {
+        headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
+      });
       if (res.ok) {
         const data = await res.json();
         setCommentStudents(data);
@@ -695,61 +712,80 @@ const GradesPage = () => {
     finally { setLoadingComments(false); }
   };
 
-  useEffect(() => { if (activeTab === 'comments' && allGraded) loadComments(); }, [activeTab, selectedClass, selectedStream, selectedTerm, allGraded]);
+  useEffect(() => { if (activeTab === 'comments' && allGraded) loadComments(); }, [activeTab, selectedClass, selectedStream, selectedTerm, allGraded, assessmentType]);
 
   const handleCommentChange = (studentId, field, value) => {
-    if (isLocked) return;
+    if (isLockedForType) return;
     setCommentStudents(prev => prev.map(s => (s.student_id === studentId ? { ...s, [field]: value } : s)));
   };
 
   const handleToggleIncludeAttendanceAll = () => {
-    if (isLocked) return;
+    if (isLockedForType) return;
     const newValue = !includeAttendanceForAll;
     setIncludeAttendanceForAll(newValue);
     setCommentStudents(prev => prev.map(s => s.submitted ? s : { ...s, include_attendance: newValue }));
   };
 
   const handleSaveAllComments = async () => {
-    if (isLocked) return false;
+    if (isLockedForType) return false;
     setSavingComment(true);
     const payload = {
       class_id: selectedClass,
       stream_id: selectedStream || null,
       term_id: selectedTerm,
-      comments: commentStudents.map(s => ({ student_id: s.student_id, comment: s.comment, include_attendance: s.include_attendance })),
+      comments: commentStudents.map(s => ({
+        student_id: s.student_id,
+        comment: s.comment,
+        include_attendance: s.include_attendance,
+      })),
     };
     try {
-      const res = await fetch(`${API_BASE}/api/grades/comments/save-all`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify(payload) });
+      const res = await fetch(`${API_BASE}/api/grades/comments/save-all`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify(payload),
+      });
       if (res.ok) { showModal('success', 'All comments saved'); return true; }
       else { const err = await res.json(); showModal('error', err.message || 'Failed to save comments'); return false; }
     } catch { showModal('error', 'Network error'); return false; }
     finally { setSavingComment(false); }
   };
 
-  // --- Updated: Auto‑generate uses the new single‑paragraph generator for skill classes ---
+  // --- UPDATED: Auto‑generate comments for both numeric and skill ---
   const handleAutoGenerateAll = () => {
-    if (isLocked) return;
+    if (isLockedForType) return;
     if (gradingType === 'skill') {
       setCommentStudents(prev => prev.map(s => {
         if (s.submitted) return s;
         const skillStudent = skillStudents.find(sk => sk.student_id === s.student_id);
-        // pass the whole skillStudent (includes .name and .competencies) to generateSkillSummary
         return { ...s, comment: skillStudent ? generateSkillSummary(skillStudent) : '' };
       }));
     } else {
-      setCommentStudents(prev => prev.map(s => s.submitted ? s : { ...s, comment: generateProfessionalComment(s) }));
+      setCommentStudents(prev => prev.map(s => {
+        if (s.submitted) return s;
+        return { ...s, comment: generateProfessionalComment(s) };
+      }));
     }
   };
 
   const handleSubmitToAdmin = async () => {
-    if (isLocked) return;
+    if (isLockedForType) return;
     const saved = await handleSaveAllComments();
     if (!saved) return;
 
-    confirmAction('Submit Report', 'You are about to submit this report to the admin. After submission, you will not be able to edit grades or comments. Continue?', async () => {
+    confirmAction('Submit Report', 'You are about to submit this report to the admin. After submission, you will not be able to edit grades or comments for this assessment type. Continue?', async () => {
       setSubmitting(true);
       try {
-        const res = await fetch(`${API_BASE}/api/grades/comments/submit`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ class_id: selectedClass, stream_id: selectedStream || null, term_id: selectedTerm }) });
+        const res = await fetch(`${API_BASE}/api/grades/comments/submit`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          body: JSON.stringify({
+            class_id: selectedClass,
+            stream_id: selectedStream || null,
+            term_id: selectedTerm,
+            assessment_type: assessmentType,
+          }),
+        });
         if (res.ok) { showModal('success', 'Submitted to admin'); loadComments(); checkSubmissionStatus(); }
         else { showModal('error', 'Failed to submit'); }
       } catch { showModal('error', 'Network error'); }
@@ -783,16 +819,16 @@ const GradesPage = () => {
 
       <h1 className="text-2xl md:text-3xl font-bold text-blue-900 mb-6">Grades & Report Cards</h1>
 
-      {isLocked && (
+      {isLockedForType && (
         <div className="mb-6 p-4 bg-red-50 border border-red-300 rounded-xl flex items-center gap-3 text-red-800">
           <FaLock className="text-2xl" />
-          <div><p className="font-semibold">Report has been submitted to admin</p><p className="text-sm">Grades and comments are locked for editing, but you can still view them by selecting a different term/class/stream/subject.</p></div>
+          <div><p className="font-semibold">This assessment type has been submitted</p><p className="text-sm">Grades are locked for editing.</p></div>
         </div>
       )}
 
       <div className="flex gap-4 mb-6">
         <button onClick={() => setActiveTab('grades')} className={`px-4 py-2 rounded-full font-medium transition ${activeTab === 'grades' ? 'bg-blue-600 text-white' : 'bg-white text-blue-600 border border-blue-600 hover:bg-blue-50'}`}>Grades Entry</button>
-        <button onClick={() => setActiveTab('comments')} disabled={!allGraded || isLocked} className={`px-4 py-2 rounded-full font-medium transition flex items-center gap-2 ${activeTab === 'comments' ? 'bg-blue-600 text-white' : (allGraded && !isLocked) ? 'bg-white text-blue-600 border border-blue-600 hover:bg-blue-50' : 'bg-gray-200 text-gray-400 cursor-not-allowed'}`} title={!allGraded ? 'All subjects must be graded first' : isLocked ? 'Report is locked' : ''}>{(!allGraded || isLocked) && <FaLock className="text-xs" />} Comments & Submission</button>
+        <button onClick={() => setActiveTab('comments')} disabled={!allGraded || isLockedForType} className={`px-4 py-2 rounded-full font-medium transition flex items-center gap-2 ${activeTab === 'comments' ? 'bg-blue-600 text-white' : (allGraded && !isLockedForType) ? 'bg-white text-blue-600 border border-blue-600 hover:bg-blue-50' : 'bg-gray-200 text-gray-400 cursor-not-allowed'}`} title={!allGraded ? 'All subjects must be graded first' : isLockedForType ? 'Assessment is locked' : ''}>{(!allGraded || isLockedForType) && <FaLock className="text-xs" />} Comments & Submission</button>
       </div>
 
       {/* Selection Bar */}
@@ -815,7 +851,7 @@ const GradesPage = () => {
           <>
             <div>
               <label className="block text-sm font-medium mb-1">Assessment Type</label>
-              <select value={assessmentType} onChange={e => setAssessmentType(e.target.value)} className="p-2 border rounded">
+              <select value={assessmentType} onChange={e => { setAssessmentType(e.target.value); setIsLockedForType(false); }} className="p-2 border rounded">
                 <option value="end_term">End of Term</option>
                 <option value="mid_term">Mid Term</option>
               </select>
@@ -830,8 +866,8 @@ const GradesPage = () => {
         )}
         <div className="flex gap-2">
           <button onClick={handleDownload} disabled={downloading || !selectedClass || !selectedTerm} className="bg-green-600 text-white px-4 py-2 rounded-lg flex items-center gap-2 hover:bg-green-700 disabled:opacity-50">{downloading ? <FaSpinner className="animate-spin" /> : <FaDownload />}{downloading ? 'Downloading...' : 'Download'}</button>
-          {!isLocked && (
-            <label className="bg-yellow-600 text-white px-4 py-2 rounded-lg flex items-center gap-2 cursor-pointer hover:bg-yellow-700">{uploading ? <FaSpinner className="animate-spin" /> : <FaUpload />}{uploading ? 'Uploading...' : 'Upload'}<input type="file" accept=".csv" className="hidden" onChange={handleUpload} disabled={uploading || isLocked} /></label>
+          {!isLockedForType && (
+            <label className="bg-yellow-600 text-white px-4 py-2 rounded-lg flex items-center gap-2 cursor-pointer hover:bg-yellow-700">{uploading ? <FaSpinner className="animate-spin" /> : <FaUpload />}{uploading ? 'Uploading...' : 'Upload'}<input type="file" accept=".csv" className="hidden" onChange={handleUpload} disabled={uploading || isLockedForType} /></label>
           )}
         </div>
       </div>
@@ -840,9 +876,8 @@ const GradesPage = () => {
       {activeTab === 'grades' && (
         <>
           {gradingType === 'numeric' ? (
-            /* Numeric grading UI */
             <>
-              {isLocked && !students.length ? (
+              {isLockedForType && !students.length ? (
                 <p className="text-gray-600">No data available.</p>
               ) : students.length > 0 ? (
                 <>
@@ -856,7 +891,7 @@ const GradesPage = () => {
                             <tr key={student.student_id} className="border-t hover:bg-gray-50">
                               <td className="p-4 sticky left-0 bg-white">{idx + 1}</td>
                               <td className="p-4"><div className="font-medium">{student.name}</div><div className="text-sm text-gray-500">{student.student_number}</div></td>
-                              <td className="p-4"><input type="number" min="0" max="100" step="1" className={`w-20 p-2 border rounded text-center ${isLocked ? 'bg-gray-100 cursor-not-allowed' : ''}`} value={gradeInfo.score ?? ''} onChange={e => handleScoreChange(student.student_id, e.target.value)} disabled={isLocked} /></td>
+                              <td className="p-4"><input type="number" min="0" max="100" step="1" className={`w-20 p-2 border rounded text-center ${isLockedForType ? 'bg-gray-100 cursor-not-allowed' : ''}`} value={gradeInfo.score ?? ''} onChange={e => handleScoreChange(student.student_id, e.target.value)} disabled={isLockedForType} /></td>
                               <td className="p-4 text-center">100</td>
                               <td className="p-4 text-center font-semibold">{gradeInfo.grade || '—'}</td>
                               <td className="p-4 text-center text-sm">{gradeInfo.remarks || '—'}</td>
@@ -867,7 +902,7 @@ const GradesPage = () => {
                       </tbody>
                     </table>
                   </div>
-                  <button onClick={handleSaveGrades} disabled={savingGrades || isLocked} className="bg-blue-600 text-white px-6 py-2 rounded-lg flex items-center gap-2 hover:bg-blue-700 transition disabled:opacity-50">{savingGrades ? <FaSpinner className="animate-spin" /> : <FaSave />}{savingGrades ? 'Saving...' : 'Save Grades'}</button>
+                  <button onClick={handleSaveGrades} disabled={savingGrades || isLockedForType} className="bg-blue-600 text-white px-6 py-2 rounded-lg flex items-center gap-2 hover:bg-blue-700 transition disabled:opacity-50">{savingGrades ? <FaSpinner className="animate-spin" /> : <FaSave />}{savingGrades ? 'Saving...' : 'Save Grades'}</button>
                 </>
               ) : (
                 <p className="text-gray-600">Select term, class, stream (optional), assessment type, and subject to load students.</p>
@@ -878,7 +913,6 @@ const GradesPage = () => {
             <>
               {skillStudents.length > 0 ? (
                 <div className="flex gap-4 flex-col lg:flex-row">
-                  {/* Left panel: Student list */}
                   <div className="w-full lg:w-1/4 bg-white rounded-xl shadow p-4 overflow-auto max-h-[70vh]">
                     <h3 className="font-semibold mb-3">Students</h3>
                     <ul className="space-y-1">
@@ -895,7 +929,6 @@ const GradesPage = () => {
                     </ul>
                   </div>
 
-                  {/* Right panel: Competencies & skills for selected student */}
                   <div className="w-full lg:w-3/4 bg-white rounded-xl shadow p-4">
                     {selectedStudentData ? (
                       <>
@@ -913,7 +946,7 @@ const GradesPage = () => {
                                     className="border rounded px-2 py-1 text-sm"
                                     value={skill.rating || ''}
                                     onChange={e => handleSkillRatingChange(skill.skill_id, e.target.value)}
-                                    disabled={isLocked}
+                                    disabled={isLockedForType}
                                   >
                                     <option value="">-- Select --</option>
                                     {RATINGS.map(r => (
@@ -926,14 +959,14 @@ const GradesPage = () => {
                                     className="border rounded px-2 py-1 text-sm w-40"
                                     value={skill.comment || ''}
                                     onChange={e => handleSkillCommentChange(skill.skill_id, e.target.value)}
-                                    disabled={isLocked}
+                                    disabled={isLockedForType}
                                   />
                                 </div>
                               ))}
                             </div>
                           </div>
                         ))}
-                        <button onClick={handleSaveSkills} disabled={savingSkills || isLocked} className="mt-4 bg-blue-600 text-white px-6 py-2 rounded-lg flex items-center gap-2 hover:bg-blue-700 transition disabled:opacity-50">{savingSkills ? <FaSpinner className="animate-spin" /> : <FaSave />}{savingSkills ? 'Saving...' : 'Save Skills'}</button>
+                        <button onClick={handleSaveSkills} disabled={savingSkills || isLockedForType} className="mt-4 bg-blue-600 text-white px-6 py-2 rounded-lg flex items-center gap-2 hover:bg-blue-700 transition disabled:opacity-50">{savingSkills ? <FaSpinner className="animate-spin" /> : <FaSave />}{savingSkills ? 'Saving...' : 'Save Skills'}</button>
                       </>
                     ) : (
                       <p className="text-gray-500">Select a student from the left panel.</p>
@@ -953,7 +986,7 @@ const GradesPage = () => {
         <>
           {!allGraded ? (
             <div className="text-center py-8 text-gray-500"><FaLock className="text-3xl mx-auto mb-2" /><p className="text-lg font-medium">Comments are locked</p><p>You must enter grades for all subjects before you can write comments and submit reports.</p></div>
-          ) : isLocked ? (
+          ) : isLockedForType ? (
             <div className="text-center py-8 text-gray-500"><FaLock className="text-3xl mx-auto mb-2" /><p className="text-lg font-medium">Report has been submitted</p><p>Comments cannot be edited after submission. You can still view them by changing the selection above.</p></div>
           ) : loadingComments ? (
             <div className="text-center py-8"><FaSpinner className="animate-spin text-2xl mx-auto" /><p>Loading...</p></div>
@@ -962,13 +995,13 @@ const GradesPage = () => {
           ) : (
             <>
               <div className="flex flex-wrap gap-4 mb-4 items-center">
-                <button onClick={handleAutoGenerateAll} disabled={isLocked} className="bg-purple-600 text-white px-4 py-2 rounded-lg flex items-center gap-2 hover:bg-purple-700 transition disabled:opacity-50"><FaMagic /> Auto-Generate All</button>
-                <button onClick={handleSaveAllComments} disabled={savingComment || isLocked || allSubmitted} className="bg-blue-600 text-white px-4 py-2 rounded-lg flex items-center gap-2 hover:bg-blue-700 transition disabled:opacity-50">{savingComment ? <FaSpinner className="animate-spin" /> : <FaSave />}{savingComment ? 'Saving...' : 'Save All Comments'}</button>
-                {!isLocked && !allSubmitted && (
+                <button onClick={handleAutoGenerateAll} disabled={isLockedForType} className="bg-purple-600 text-white px-4 py-2 rounded-lg flex items-center gap-2 hover:bg-purple-700 transition disabled:opacity-50"><FaMagic /> Auto-Generate All</button>
+                <button onClick={handleSaveAllComments} disabled={savingComment || isLockedForType || allSubmitted} className="bg-blue-600 text-white px-4 py-2 rounded-lg flex items-center gap-2 hover:bg-blue-700 transition disabled:opacity-50">{savingComment ? <FaSpinner className="animate-spin" /> : <FaSave />}{savingComment ? 'Saving...' : 'Save All Comments'}</button>
+                {!isLockedForType && !allSubmitted && (
                   <label className="flex items-center gap-2 text-sm bg-white px-4 py-2 rounded-lg border cursor-pointer hover:bg-gray-50"><input type="checkbox" checked={includeAttendanceForAll} onChange={handleToggleIncludeAttendanceAll} /><FaUserCheck className="text-blue-600" /> Include Attendance for All</label>
                 )}
               </div>
-              {anySubmitted && !isLocked && (
+              {anySubmitted && !isLockedForType && (
                 <div className="mb-4 p-3 bg-yellow-50 border border-yellow-200 rounded-lg text-yellow-700 text-sm"><FaLock className="inline mr-1" /> Some comments have already been submitted and cannot be edited.</div>
               )}
               <div className="bg-white rounded-xl shadow overflow-x-auto mb-4">
@@ -991,18 +1024,18 @@ const GradesPage = () => {
                           <td className="p-4">{student.attendance_pct}%</td>
                           <td className="p-4">
                             <textarea
-                              className={`border rounded p-2 w-full min-w-[200px] ${isLocked || isSubmitted ? 'bg-gray-100 cursor-not-allowed' : ''}`}
+                              className={`border rounded p-2 w-full min-w-[200px] ${isLockedForType || isSubmitted ? 'bg-gray-100 cursor-not-allowed' : ''}`}
                               rows={5}
                               value={student.comment}
                               onChange={e => handleCommentChange(student.student_id, 'comment', e.target.value)}
-                              disabled={isLocked || isSubmitted}
+                              disabled={isLockedForType || isSubmitted}
                             />
                             <label className="flex items-center gap-2 text-sm mt-1">
                               <input
                                 type="checkbox"
                                 checked={student.include_attendance}
                                 onChange={e => handleCommentChange(student.student_id, 'include_attendance', e.target.checked)}
-                                disabled={isLocked || isSubmitted}
+                                disabled={isLockedForType || isSubmitted}
                               /> Include attendance in comment
                             </label>
                           </td>
@@ -1012,7 +1045,7 @@ const GradesPage = () => {
                   </tbody>
                 </table>
               </div>
-              {!isLocked && (
+              {!isLockedForType && (
                 <div className="flex gap-4">
                   {!allSubmitted && (
                     <button onClick={handleSubmitToAdmin} disabled={submitting} className="bg-green-600 text-white px-6 py-2 rounded-lg flex items-center gap-2 hover:bg-green-700 disabled:opacity-50">{submitting ? <FaSpinner className="animate-spin" /> : <FaPaperPlane />}{submitting ? 'Submitting...' : 'Submit to Admin'}</button>
